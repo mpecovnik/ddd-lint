@@ -4,6 +4,7 @@ pub mod rules;
 pub(crate) mod config;
 pub(crate) mod ct;
 pub mod diagnostics;
+pub(crate) mod dm;
 #[allow(dead_code)] // Semantic graph queries are consumed by rules in MAT-7 and MAT-9.
 pub(crate) mod graph;
 #[allow(dead_code)] // Project metadata is consumed by graph indexing in MAT-15.
@@ -150,10 +151,13 @@ fn check(
 
     // MAT-7, MAT-9, and MAT-11 add concrete rule findings to this shared pipeline.
     // Keeping execution below the syntax/directive guard prevents partial analysis.
-    let diagnostics = exceptions.apply(
-        ct::run(&graph, &project.config().enabled_rules),
-        project.root(),
-    );
+    let mut rule_diagnostics = ct::run(&graph, &project.config().enabled_rules);
+    rule_diagnostics.extend(dm::run(
+        &graph,
+        &project.config().enabled_rules,
+        &project.config().dm002,
+    ));
+    let diagnostics = exceptions.apply(rule_diagnostics, project.root());
     match output_format {
         OutputFormat::Human => diagnostics.write_human(output, project.root(), &sources),
         OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),

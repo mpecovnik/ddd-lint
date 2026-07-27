@@ -658,3 +658,91 @@ fn ct_rules_analyze_async_functions() {
     assert!(findings.contains("CT001"), "{findings}");
     assert!(findings.contains("CT003"), "{findings}");
 }
+
+#[test]
+fn dm_rules_cover_nullable_thresholds_defaults_and_exclusions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM002\", \"DM003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from typing import Annotated, Any, ClassVar, Optional\nfrom pydantic import BaseModel, Field, RootModel\nclass Record(BaseModel):\n    first: str | None\n    second: Optional[int]\n    third: \"bytes | None\"\n    fourth: float | None\n    nested: list[str | None]\n    anything: Any\n    opaque: object\n    default_literal: int = 1\n    default_name: int = DEFAULT\n    default_call: list[str] = Field(default_factory=list)\n    metadata_default: Annotated[int, Field(default=0)]\n    required_field: int = Field(...)\n    metadata_only: Annotated[int, Field(description=\"required\")]\n    _private: str | None\n    kind: ClassVar[str] = \"record\"\nclass Child(Record):\n    own: str\nclass Root(RootModel[str | None]):\n    pass\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("DM001 nullable-model-field").count(),
+        4,
+        "{findings}"
+    );
+    assert_eq!(
+        findings.matches("DM002 nullable-heavy-model").count(),
+        1,
+        "{findings}"
+    );
+    assert_eq!(
+        findings.matches("DM003 defaulted-model-field").count(),
+        4,
+        "{findings}"
+    );
+    assert!(!findings.contains("nested` explicitly"), "{findings}");
+    assert!(!findings.contains("required_field` has"), "{findings}");
+}
+
+#[test]
+fn dm002_requires_both_configured_gates_and_dm_suppressions_are_exact() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM002\"]\n[tool.ddd-lint.rules.DM002]\nmin-nullable-fields = 2\nmin-nullable-ratio = 0.60\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from pydantic import BaseModel\n# ddd-lint: ignore[DM002] - sparse transport record\nclass Record(BaseModel):\n    first: str | None  # ddd-lint: ignore[DM001] - absence is meaningful\n    second: str | None\n    required: str\n",
+    );
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(findings.matches("DM001").count(), 1, "{findings}");
+    assert!(!findings.contains("DM002"), "{findings}");
+}
+
+#[test]
+fn dm_rules_resolve_cross_file_model_aliases_and_documented_field_forms() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM003\"]\n",
+    );
+    write(
+        &directory.path().join("base.py"),
+        "from pydantic import BaseModel as Model\nclass DomainModel(Model):\n    inherited: str\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from typing import Union\nfrom pydantic import Field, computed_field\nfrom base import DomainModel as Base\nclass Shipment(Base):\n    tracking: Union[str, None]\n    priority: int = Field(default=0)\n    @computed_field\n    def label(self) -> str:\n        return self.tracking or \"pending\"\n",
+    );
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(findings.matches("DM001").count(), 1, "{findings}");
+    assert_eq!(findings.matches("DM003").count(), 1, "{findings}");
+    assert!(!findings.contains("inherited`"), "{findings}");
+    assert!(!findings.contains("label`"), "{findings}");
+}
