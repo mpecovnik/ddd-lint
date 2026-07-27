@@ -374,3 +374,287 @@ fn misplaced_directive_survives_syntax_error_guard() {
         "{findings}"
     );
 }
+
+#[test]
+fn ct001_and_ct002_report_missing_members_and_catch_all_independently() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\ndef label(document: Document) -> str:\n    match document:\n        case Draft():\n            return \"draft\"\n        case _:\n            return \"other\"\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(
+        findings
+            .contains("CT001 non-exhaustive-match: match omits closed members: model.Published"),
+        "{findings}"
+    );
+    assert!(
+        findings.contains("CT002 catch-all-on-closed-type"),
+        "{findings}"
+    );
+
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\"]\n",
+    );
+    let ct001 = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(!stdout(&ct001).contains("CT002"));
+}
+
+#[test]
+fn ct001_handles_or_as_guards_literals_enums_and_none() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from enum import Enum\nfrom typing import Literal\nclass Draft: pass\nclass Published: pass\nDocument = Draft | Published\nMaybeDocument = Draft | Published | None\nclass Status(Enum):\n    OPEN = \"open\"\n    CLOSED = \"closed\"\ndef complete(document: Document):\n    match document:\n        case (Draft() | Published()) as selected:\n            return selected\ndef guarded(document: Document):\n    match document:\n        case Draft():\n            return 1\n        case Published() if ready:\n            return 2\ndef nullable(document: MaybeDocument):\n    match document:\n        case Draft() | Published():\n            return 1\ndef enum_label(status: Status):\n    match status:\n        case Status.OPEN:\n            return \"open\"\ndef literal_label(value: Literal[\"a\", \"b\", None]):\n    match value:\n        case \"a\":\n            return 1\n        case None:\n            return 0\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("CT001 non-exhaustive-match").count(),
+        4,
+        "{findings}"
+    );
+    assert!(findings.contains("model.Published"), "{findings}");
+    assert!(findings.contains("model.Status.CLOSED"), "{findings}");
+    assert!(findings.contains("\"b\""), "{findings}");
+    assert!(findings.contains("None"), "{findings}");
+}
+
+#[test]
+fn ct003_recognizes_documented_direct_tests_but_skips_out_of_scope_forms() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from enum import Enum\nfrom typing import Literal\nclass Draft:\n    kind: Literal[\"draft\"]\nclass Published:\n    kind: Literal[\"published\"]\nDocument = Draft | Published\nclass Status(Enum):\n    OPEN = \"open\"\n    CLOSED = \"closed\"\ndef dispatch(document: Document, status: Status, tag: Literal[\"a\", \"b\"]):\n    if not isinstance(document, Draft):\n        pass\n    if Published is type(document):\n        pass\n    message = \"open\" if status == Status.OPEN else \"closed\"\n    if document.kind == \"draft\":\n        pass\n    if \"a\" == tag:\n        pass\n    while isinstance(document, Draft):\n        break\n    assert status == Status.OPEN\n    if tag in {\"a\", \"b\"}:\n        pass\n    if is_draft(document):\n        pass\ndef shadowed(document: Document, isinstance, type):\n    if isinstance(document, Draft):\n        pass\n    if type(document) is Draft:\n        pass\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings
+            .matches("CT003 conditional-closed-type-dispatch")
+            .count(),
+        5,
+        "{findings}"
+    );
+}
+
+#[test]
+fn ct004_reports_discriminator_match_across_modules() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT004\"]\n",
+    );
+    write(
+        &directory.path().join("domain.py"),
+        "from typing import Literal\nclass Draft:\n    kind: Literal[\"draft\"]\nclass Published:\n    kind: Literal[\"published\"]\nDocument = Draft | Published\n",
+    );
+    write(
+        &directory.path().join("app.py"),
+        "from domain import Document\ndef label(document: Document):\n    match document.kind:\n        case \"draft\": return 1\n        case \"published\": return 2\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .args(["check", "app.py"])
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(findings.contains("app.py"), "{findings}");
+    assert!(findings.contains("CT004 discriminator-match"), "{findings}");
+    assert!(!findings.contains("domain.py"), "{findings}");
+}
+
+#[test]
+fn ct_findings_respect_source_and_per_file_design_exceptions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"generated.py\"\nrules = [\"CT001\"]\nreason = \"Generated partial dispatcher\"\n",
+    );
+    let source = "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\ndef label(document: Document):\n    # ddd-lint: ignore[CT001] - upstream filters published values\n    match document:\n        case Draft(): return 1\n        case _:  # ddd-lint: ignore[CT002] - legacy values need quarantine\n            return 0\n";
+    write(&directory.path().join("model.py"), source);
+    write(
+        &directory.path().join("generated.py"),
+        "from model import Document, Draft\ndef label(document: Document):\n    match document:\n        case Draft(): return 1\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn ct_rules_resolve_nested_function_scopes() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\ndef outer(enabled: bool):\n    if enabled:\n        def label(document: Document):\n            match document:\n                case Draft(): return 1\n        return label\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("model.Published"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn ct003_skips_module_shadowed_builtins() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nisinstance = vendor_check\ntype = vendor_type\ndef dispatch(document: Document):\n    if isinstance(document, Draft):\n        pass\n    if type(document) is Published:\n        pass\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn ct003_skips_function_and_enclosing_scope_shadowed_builtins() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\ndef outer(enabled: bool):\n    if enabled:\n        from vendor import isinstance\n        def type(value): return Published\n    def inner(document: Document):\n        if isinstance(document, Draft):\n            pass\n        if type(document) is Draft:\n            pass\n    return inner\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn ct003_does_not_treat_global_declarations_as_local_shadowing() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\ndef dispatch(document: Document):\n    global isinstance\n    if isinstance(document, Draft):\n        pass\n    isinstance = vendor_check\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).contains("CT003"), "{}", stdout(&output));
+}
+
+#[test]
+fn ct_rules_index_definitions_inside_module_and_class_suites() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nif enabled:\n    def dispatch(document: Document):\n        if isinstance(document, Draft):\n            return 1\nclass Adapter:\n    if enabled:\n        def label(self, document: Document):\n            match document:\n                case Draft(): return 1\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(findings.contains("CT001"), "{findings}");
+    assert!(findings.contains("CT003"), "{findings}");
+}
+
+#[test]
+fn ct_rules_analyze_async_functions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT003\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nasync def label(document: Document):\n    if isinstance(document, Draft):\n        return 1\n    match document:\n        case Draft(): return 1\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(findings.contains("CT001"), "{findings}");
+    assert!(findings.contains("CT003"), "{findings}");
+}

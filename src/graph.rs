@@ -10,9 +10,9 @@ use num_traits::FromPrimitive;
 use crate::config::TargetVersion;
 use crate::project::{DiscoveredFiles, Project};
 use crate::python::{
-    AssignmentFact, ByteRange, ClassFact, Comment, FunctionFact, ImportFact, ModuleFacts,
-    ParameterKind, ParseErrors, PythonVersion, SemanticExpr, SourceFile, SourceKind, SyntaxNode,
-    parse_module,
+    AssignmentFact, ByteRange, ClassFact, ClosedTypeSiteFact, Comment, FunctionFact, ImportFact,
+    ModuleFacts, ParameterKind, ParseErrors, PythonVersion, SemanticExpr, SourceFile, SourceKind,
+    SyntaxNode, parse_module,
 };
 
 #[derive(Clone, Debug)]
@@ -65,6 +65,9 @@ pub struct FunctionInfo {
     pub parameters: Vec<ParameterInfo>,
     pub returns: ResolvedType,
     pub locals: BTreeMap<String, ResolvedType>,
+    pub bound_names: BTreeSet<String>,
+    pub global_names: BTreeSet<String>,
+    pub nonlocal_names: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,15 +273,26 @@ impl ProjectGraph {
                     &mut diagnostic_classes,
                     &diagnostic_paths,
                 );
+                index_class_functions(
+                    &resolver,
+                    module_name,
+                    None,
+                    class,
+                    &mut functions,
+                    &mut diagnostic_functions,
+                    &diagnostic_paths,
+                );
             }
             for function in &module.facts.functions {
-                let info = resolve_function(&resolver, module_name, None, function);
-                if SourceKind::from_path(&function.path) == SourceKind::Python
-                    && diagnostic_paths.contains(&function.path)
-                {
-                    diagnostic_functions.push(info.clone());
-                }
-                functions.insert(info.qualified_name.clone(), info);
+                index_function(
+                    &resolver,
+                    module_name,
+                    None,
+                    function,
+                    &mut functions,
+                    &mut diagnostic_functions,
+                    &diagnostic_paths,
+                );
             }
         }
 
@@ -317,6 +331,129 @@ impl ProjectGraph {
 
     pub fn diagnostic_functions(&self) -> &[FunctionInfo] {
         &self.diagnostic_functions
+    }
+
+    pub fn closed_type_sites(&self) -> impl Iterator<Item = (&str, &ClosedTypeSiteFact)> {
+        self.modules.iter().flat_map(|(module, raw)| {
+            raw.facts
+                .closed_type_sites
+                .iter()
+                .map(move |site| (module.as_str(), site))
+        })
+    }
+
+    pub fn site_type(
+        &self,
+        module: &str,
+        scope: Option<&str>,
+        expression: &SemanticExpr,
+    ) -> ResolvedType {
+        match expression {
+            SemanticExpr::Name(name) => {
+                if let Some(resolved) =
+                    scope.and_then(|scope| self.scoped_local(module, scope, name))
+                {
+                    return resolved.clone();
+                }
+                if self.is_locally_bound(module, scope, name) {
+                    return ResolvedType::Unknown;
+                }
+                Resolver::new(&self.modules).resolve_name_type(module, name, &mut BTreeSet::new())
+            }
+            SemanticExpr::Attribute { value, name } => {
+                self.attribute_type(&self.site_type(module, scope, value), name)
+            }
+            SemanticExpr::Call { .. } => Resolver::new(&self.modules).expression_type(
+                module,
+                expression,
+                &mut BTreeSet::new(),
+            ),
+            _ => {
+                Resolver::new(&self.modules).resolve_type(module, expression, &mut BTreeSet::new())
+            }
+        }
+    }
+
+    pub fn site_symbol(
+        &self,
+        module: &str,
+        scope: Option<&str>,
+        expression: &SemanticExpr,
+    ) -> Option<String> {
+        if let SemanticExpr::Name(name) = expression
+            && self.is_locally_bound(module, scope, name)
+        {
+            return None;
+        }
+        let resolver = Resolver::new(&self.modules);
+        let canonical = resolver.canonical_symbol(module, expression, &mut BTreeSet::new())?;
+        Some(
+            resolver
+                .resolve_export(&canonical, &mut BTreeSet::new())
+                .unwrap_or(canonical),
+        )
+    }
+
+    pub fn is_locally_bound(&self, module: &str, scope: Option<&str>, name: &str) -> bool {
+        scope.is_some_and(|scope| self.scoped_binding(module, scope, name))
+    }
+
+    pub fn builtin_is_unshadowed(&self, module: &str, scope: Option<&str>, name: &str) -> bool {
+        !self.is_locally_bound(module, scope, name)
+            && self.modules.get(module).is_none_or(|raw| {
+                !raw.facts.assignments.iter().any(|item| item.name == name)
+                    && !raw.facts.classes.iter().any(|item| item.name == name)
+                    && !raw.facts.functions.iter().any(|item| item.name == name)
+                    && !raw
+                        .facts
+                        .imports
+                        .iter()
+                        .any(|item| import_binds(item, name))
+            })
+    }
+
+    fn scoped_function(&self, module: &str, scope: &str) -> Option<&FunctionInfo> {
+        let qualified = format!("{module}.{scope}");
+        self.functions.get(&qualified).or_else(|| {
+            self.classes
+                .values()
+                .flat_map(|class| class.methods.values())
+                .find(|function| function.qualified_name == qualified)
+        })
+    }
+
+    fn scoped_local(&self, module: &str, scope: &str, name: &str) -> Option<&ResolvedType> {
+        let mut candidate = Some(scope);
+        while let Some(scope) = candidate {
+            if let Some(function) = self.scoped_function(module, scope) {
+                if function.global_names.contains(name) {
+                    return None;
+                }
+                if !function.nonlocal_names.contains(name)
+                    && let Some(resolved) = function.locals.get(name)
+                {
+                    return Some(resolved);
+                }
+            }
+            candidate = scope.rsplit_once('.').map(|(parent, _)| parent);
+        }
+        None
+    }
+
+    fn scoped_binding(&self, module: &str, scope: &str, name: &str) -> bool {
+        let mut candidate = Some(scope);
+        while let Some(scope) = candidate {
+            if let Some(function) = self.scoped_function(module, scope) {
+                if function.global_names.contains(name) {
+                    return false;
+                }
+                if !function.nonlocal_names.contains(name) && function.bound_names.contains(name) {
+                    return true;
+                }
+            }
+            candidate = scope.rsplit_once('.').map(|(parent, _)| parent);
+        }
+        false
     }
 
     pub fn name_type(&self, module: &str, name: &str) -> ResolvedType {
@@ -678,6 +815,7 @@ impl RawModule {
                 classes: Vec::new(),
                 functions: Vec::new(),
                 assignments: Vec::new(),
+                closed_type_sites: Vec::new(),
             },
         }
     }
@@ -687,6 +825,7 @@ impl RawModule {
         self.facts.classes.extend(facts.classes);
         self.facts.functions.extend(facts.functions);
         self.facts.assignments.extend(facts.assignments);
+        self.facts.closed_type_sites.extend(facts.closed_type_sites);
     }
 }
 
@@ -723,7 +862,8 @@ impl<'a> Resolver<'a> {
                 self.resolve_type(module, left, visiting),
                 self.resolve_type(module, right, visiting),
             ]),
-            SemanticExpr::Name(_) | SemanticExpr::Attribute { .. } => self
+            SemanticExpr::Name(name) => self.resolve_name_type(module, name, visiting),
+            SemanticExpr::Attribute { .. } => self
                 .canonical_symbol(module, expression, visiting)
                 .map_or(ResolvedType::Unknown, |canonical| {
                     self.type_from_canonical(&canonical, visiting)
@@ -1123,6 +1263,77 @@ fn index_class(
     }
 }
 
+fn index_class_functions(
+    resolver: &Resolver<'_>,
+    module: &str,
+    parent: Option<&str>,
+    class: &ClassFact,
+    functions: &mut BTreeMap<String, FunctionInfo>,
+    diagnostic_functions: &mut Vec<FunctionInfo>,
+    diagnostic_paths: &BTreeSet<PathBuf>,
+) {
+    let local_name = parent.map_or_else(
+        || class.name.clone(),
+        |parent| format!("{parent}.{}", class.name),
+    );
+    for function in &class.methods {
+        index_function(
+            resolver,
+            module,
+            Some(&local_name),
+            function,
+            functions,
+            diagnostic_functions,
+            diagnostic_paths,
+        );
+    }
+    for nested in &class.nested_classes {
+        index_class_functions(
+            resolver,
+            module,
+            Some(&local_name),
+            nested,
+            functions,
+            diagnostic_functions,
+            diagnostic_paths,
+        );
+    }
+}
+
+fn index_function(
+    resolver: &Resolver<'_>,
+    module: &str,
+    parent: Option<&str>,
+    function: &FunctionFact,
+    functions: &mut BTreeMap<String, FunctionInfo>,
+    diagnostic_functions: &mut Vec<FunctionInfo>,
+    diagnostic_paths: &BTreeSet<PathBuf>,
+) {
+    let info = resolve_function(resolver, module, parent, function);
+    if SourceKind::from_path(&function.path) == SourceKind::Python
+        && diagnostic_paths.contains(&function.path)
+    {
+        diagnostic_functions.push(info.clone());
+    }
+    let local_name = info
+        .qualified_name
+        .strip_prefix(&format!("{module}."))
+        .expect("qualified function belongs to module")
+        .to_owned();
+    functions.insert(info.qualified_name.clone(), info);
+    for nested in &function.nested_functions {
+        index_function(
+            resolver,
+            module,
+            Some(&local_name),
+            nested,
+            functions,
+            diagnostic_functions,
+            diagnostic_paths,
+        );
+    }
+}
+
 fn resolve_field(resolver: &Resolver<'_>, module: &str, field: &AssignmentFact) -> FieldInfo {
     let annotation = field
         .annotation
@@ -1223,7 +1434,27 @@ fn resolve_function(
         .iter()
         .map(|parameter| (parameter.name.clone(), parameter.annotation.clone()))
         .collect::<BTreeMap<_, _>>();
+    let mut bound_names = function
+        .bound_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let global_names = function
+        .global_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let nonlocal_names = function
+        .nonlocal_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    bound_names.retain(|name| !global_names.contains(name) && !nonlocal_names.contains(name));
+    bound_names.extend(parameters.iter().map(|parameter| parameter.name.clone()));
     for assignment in &function.assignments {
+        if global_names.contains(&assignment.name) || nonlocal_names.contains(&assignment.name) {
+            continue;
+        }
         let resolved = assignment.annotation.as_ref().map_or_else(
             || match assignment.value.as_ref() {
                 Some(SemanticExpr::Name(name)) if locals.contains_key(name) => locals[name].clone(),
@@ -1233,6 +1464,7 @@ fn resolve_function(
             |annotation| resolver.resolve_type(module, annotation, &mut BTreeSet::new()),
         );
         locals.insert(assignment.name.clone(), resolved);
+        bound_names.insert(assignment.name.clone());
     }
     FunctionInfo {
         qualified_name: format!("{module}.{local_name}"),
@@ -1246,6 +1478,9 @@ fn resolve_function(
                 resolver.resolve_type(module, returns, &mut BTreeSet::new())
             }),
         locals,
+        bound_names,
+        global_names,
+        nonlocal_names,
     }
 }
 
@@ -1375,6 +1610,23 @@ fn find_class_fact<'a>(classes: &'a [ClassFact], local: &str) -> Option<&'a Clas
     }
 }
 
+fn import_binds(import: &ImportFact, name: &str) -> bool {
+    match import {
+        ImportFact::Import { module, alias, .. } => {
+            alias
+                .as_deref()
+                .unwrap_or_else(|| module.split('.').next().unwrap_or(module))
+                == name
+        }
+        ImportFact::From {
+            name: imported,
+            alias,
+            ..
+        } => alias.as_deref().unwrap_or(imported) == name,
+        ImportFact::Wildcard { .. } => false,
+    }
+}
+
 fn builtin_name(name: &str) -> Option<String> {
     match name {
         "object" | "str" | "bytes" | "int" | "float" | "bool" | "list" | "dict" | "set"
@@ -1414,7 +1666,7 @@ fn union_type(types: Vec<ResolvedType>) -> ResolvedType {
     }
 }
 
-fn literal_value(expression: &SemanticExpr) -> Option<LiteralValue> {
+pub(crate) fn literal_value(expression: &SemanticExpr) -> Option<LiteralValue> {
     match expression {
         SemanticExpr::String(value) => Some(LiteralValue::String(value.clone())),
         SemanticExpr::Bytes(value) => Some(LiteralValue::Bytes(value.clone())),
@@ -1443,7 +1695,7 @@ fn literal_domain(values: &[LiteralValue]) -> Option<ClosedDomain> {
     (!unique.is_empty()).then_some(ClosedDomain::Literal(unique))
 }
 
-fn typing_equal(left: &LiteralValue, right: &LiteralValue) -> bool {
+pub(crate) fn typing_equal(left: &LiteralValue, right: &LiteralValue) -> bool {
     let (LiteralValue::Number(left), LiteralValue::Number(right)) = (left, right) else {
         return false;
     };

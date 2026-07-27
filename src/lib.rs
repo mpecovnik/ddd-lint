@@ -2,6 +2,7 @@ pub mod cli;
 pub mod rules;
 
 pub(crate) mod config;
+pub(crate) mod ct;
 pub mod diagnostics;
 #[allow(dead_code)] // Semantic graph queries are consumed by rules in MAT-7 and MAT-9.
 pub(crate) mod graph;
@@ -143,13 +144,16 @@ fn check(
         return Ok(ExitStatus::Violations);
     }
 
-    let _graph = build
+    let graph = build
         .into_rule_graph()
         .expect("syntax errors were checked before rule execution");
 
     // MAT-7, MAT-9, and MAT-11 add concrete rule findings to this shared pipeline.
     // Keeping execution below the syntax/directive guard prevents partial analysis.
-    let diagnostics = exceptions.apply(Vec::new(), project.root());
+    let diagnostics = exceptions.apply(
+        ct::run(&graph, &project.config().enabled_rules),
+        project.root(),
+    );
     match output_format {
         OutputFormat::Human => diagnostics.write_human(output, project.root(), &sources),
         OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),

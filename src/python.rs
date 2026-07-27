@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_ast::visitor::source_order::SourceOrderVisitor;
 use ruff_python_ast::{
-    AnyNodeRef, Expr, ModModule, NodeKind, Operator, PySourceType,
-    PythonVersion as RuffPythonVersion, Stmt, UnaryOp,
+    AnyNodeRef, CmpOp, ExceptHandler, Expr, ModModule, NodeKind, Operator, Pattern, PySourceType,
+    PythonVersion as RuffPythonVersion, Singleton, Stmt, UnaryOp,
 };
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_text_size::{Ranged, TextRange as RuffTextRange};
@@ -322,6 +322,109 @@ pub struct ModuleFacts {
     pub classes: Vec<ClassFact>,
     pub functions: Vec<FunctionFact>,
     pub assignments: Vec<AssignmentFact>,
+    pub closed_type_sites: Vec<ClosedTypeSiteFact>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClosedTypeSiteFact {
+    Match(MatchFact),
+    Conditional(ConditionalFact),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchFact {
+    pub path: PathBuf,
+    pub scope: Option<String>,
+    pub range: ByteRange,
+    pub subject_range: ByteRange,
+    pub subject: SemanticExpr,
+    pub cases: Vec<MatchCaseFact>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchCaseFact {
+    pub pattern: PatternFact,
+    pub guarded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PatternFact {
+    Value {
+        range: ByteRange,
+        value: SemanticExpr,
+    },
+    Singleton {
+        range: ByteRange,
+        value: SingletonFact,
+    },
+    Class {
+        range: ByteRange,
+        class: SemanticExpr,
+    },
+    As {
+        range: ByteRange,
+        pattern: Box<Self>,
+    },
+    Or {
+        range: ByteRange,
+        patterns: Vec<Self>,
+    },
+    CatchAll {
+        range: ByteRange,
+    },
+    Other {
+        range: ByteRange,
+    },
+}
+
+impl PatternFact {
+    pub const fn range(&self) -> ByteRange {
+        match self {
+            Self::Value { range, .. }
+            | Self::Singleton { range, .. }
+            | Self::Class { range, .. }
+            | Self::As { range, .. }
+            | Self::Or { range, .. }
+            | Self::CatchAll { range }
+            | Self::Other { range } => *range,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SingletonFact {
+    None,
+    True,
+    False,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConditionalFact {
+    pub path: PathBuf,
+    pub scope: Option<String>,
+    pub range: ByteRange,
+    pub test: DirectTestFact,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DirectTestFact {
+    IsInstance {
+        value: SemanticExpr,
+        member: SemanticExpr,
+    },
+    Compare {
+        left: SemanticExpr,
+        operator: ComparisonFact,
+        right: SemanticExpr,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComparisonFact {
+    Equal,
+    NotEqual,
+    Is,
+    IsNot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -367,6 +470,10 @@ pub struct FunctionFact {
     pub parameters: Vec<ParameterFact>,
     pub returns: Option<SemanticExpr>,
     pub assignments: Vec<AssignmentFact>,
+    pub nested_functions: Vec<FunctionFact>,
+    pub bound_names: Vec<String>,
+    pub global_names: Vec<String>,
+    pub nonlocal_names: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -515,7 +622,37 @@ fn extract_module_facts(
     let mut classes = Vec::new();
     let mut functions = Vec::new();
     let mut assignments = Vec::new();
-    for statement in &module.body {
+    extract_module_suite(
+        &module.body,
+        path,
+        source,
+        target_version,
+        &mut imports,
+        &mut classes,
+        &mut functions,
+        &mut assignments,
+    );
+    ModuleFacts {
+        imports,
+        classes,
+        functions,
+        assignments,
+        closed_type_sites: ClosedTypeCollector::collect(module, path, source, target_version),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_module_suite(
+    statements: &[Stmt],
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+    imports: &mut Vec<ImportFact>,
+    classes: &mut Vec<ClassFact>,
+    functions: &mut Vec<FunctionFact>,
+    assignments: &mut Vec<AssignmentFact>,
+) {
+    for statement in statements {
         match statement {
             Stmt::Import(import) => {
                 imports.extend(import.names.iter().map(|alias| ImportFact::Import {
@@ -551,12 +688,20 @@ fn extract_module_facts(
             }
             _ => assignments.extend(extract_assignments(statement, path, source, target_version)),
         }
-    }
-    ModuleFacts {
-        imports,
-        classes,
-        functions,
-        assignments,
+        if !matches!(statement, Stmt::FunctionDef(_) | Stmt::ClassDef(_)) {
+            for_each_child_suite(statement, |suite| {
+                extract_module_suite(
+                    suite,
+                    path,
+                    source,
+                    target_version,
+                    imports,
+                    classes,
+                    functions,
+                    assignments,
+                );
+            });
+        }
     }
 }
 
@@ -570,26 +715,16 @@ fn extract_class(
     let mut members = Vec::new();
     let mut methods = Vec::new();
     let mut nested_classes = Vec::new();
-    for statement in &class.body {
-        match statement {
-            Stmt::FunctionDef(function) => {
-                methods.push(extract_function(function, path, source, target_version));
-            }
-            Stmt::ClassDef(class) => {
-                nested_classes.push(extract_class(class, path, source, target_version));
-            }
-            _ => {
-                let assignments = extract_assignments(statement, path, source, target_version);
-                fields.extend(
-                    assignments
-                        .iter()
-                        .filter(|assignment| assignment.annotation.is_some())
-                        .cloned(),
-                );
-                members.extend(assignments);
-            }
-        }
-    }
+    extract_class_suite(
+        &class.body,
+        path,
+        source,
+        target_version,
+        &mut fields,
+        &mut members,
+        &mut methods,
+        &mut nested_classes,
+    );
     ClassFact {
         name: class.name.to_string(),
         path: path.to_owned(),
@@ -609,6 +744,53 @@ fn extract_class(
         members,
         methods,
         nested_classes,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_class_suite(
+    statements: &[Stmt],
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+    fields: &mut Vec<AssignmentFact>,
+    members: &mut Vec<AssignmentFact>,
+    methods: &mut Vec<FunctionFact>,
+    nested_classes: &mut Vec<ClassFact>,
+) {
+    for statement in statements {
+        match statement {
+            Stmt::FunctionDef(function) => {
+                methods.push(extract_function(function, path, source, target_version));
+            }
+            Stmt::ClassDef(class) => {
+                nested_classes.push(extract_class(class, path, source, target_version));
+            }
+            _ => {
+                let assignments = extract_assignments(statement, path, source, target_version);
+                fields.extend(
+                    assignments
+                        .iter()
+                        .filter(|assignment| assignment.annotation.is_some())
+                        .cloned(),
+                );
+                members.extend(assignments);
+            }
+        }
+        if !matches!(statement, Stmt::FunctionDef(_) | Stmt::ClassDef(_)) {
+            for_each_child_suite(statement, |suite| {
+                extract_class_suite(
+                    suite,
+                    path,
+                    source,
+                    target_version,
+                    fields,
+                    members,
+                    methods,
+                    nested_classes,
+                );
+            });
+        }
     }
 }
 
@@ -668,6 +850,19 @@ fn extract_function(
         .iter()
         .flat_map(|statement| extract_assignments(statement, path, source, target_version))
         .collect();
+    let mut nested_functions = Vec::new();
+    collect_nested_functions(
+        &function.body,
+        path,
+        source,
+        target_version,
+        &mut nested_functions,
+    );
+    let mut bound_names = Vec::new();
+    collect_bound_names(&function.body, &mut bound_names);
+    let mut global_names = Vec::new();
+    let mut nonlocal_names = Vec::new();
+    collect_scope_declarations(&function.body, &mut global_names, &mut nonlocal_names);
     FunctionFact {
         name: function.name.to_string(),
         path: path.to_owned(),
@@ -683,6 +878,153 @@ fn extract_function(
             .as_deref()
             .map(|expression| semantic_expr(expression, source, target_version, true)),
         assignments,
+        nested_functions,
+        bound_names,
+        global_names,
+        nonlocal_names,
+    }
+}
+
+fn collect_scope_declarations(
+    statements: &[Stmt],
+    global_names: &mut Vec<String>,
+    nonlocal_names: &mut Vec<String>,
+) {
+    for statement in statements {
+        match statement {
+            Stmt::Global(statement) => {
+                global_names.extend(statement.names.iter().map(ToString::to_string));
+            }
+            Stmt::Nonlocal(statement) => {
+                nonlocal_names.extend(statement.names.iter().map(ToString::to_string));
+            }
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) => continue,
+            _ => {}
+        }
+        for_each_child_suite(statement, |suite| {
+            collect_scope_declarations(suite, global_names, nonlocal_names);
+        });
+    }
+}
+
+fn collect_nested_functions(
+    statements: &[Stmt],
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+    output: &mut Vec<FunctionFact>,
+) {
+    for statement in statements {
+        match statement {
+            Stmt::FunctionDef(function) => {
+                output.push(extract_function(function, path, source, target_version));
+            }
+            Stmt::ClassDef(_) => {}
+            _ => for_each_child_suite(statement, |suite| {
+                collect_nested_functions(suite, path, source, target_version, output);
+            }),
+        }
+    }
+}
+
+fn collect_bound_names(statements: &[Stmt], output: &mut Vec<String>) {
+    for statement in statements {
+        output.extend(statement_bound_names(statement));
+        match statement {
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
+            _ => for_each_child_suite(statement, |suite| collect_bound_names(suite, output)),
+        }
+        if let Stmt::Try(statement) = statement {
+            for handler in &statement.handlers {
+                let ExceptHandler::ExceptHandler(handler) = handler;
+                if let Some(name) = &handler.name {
+                    output.push(name.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn for_each_child_suite(statement: &Stmt, mut visit: impl FnMut(&[Stmt])) {
+    match statement {
+        Stmt::For(statement) => {
+            visit(&statement.body);
+            visit(&statement.orelse);
+        }
+        Stmt::While(statement) => {
+            visit(&statement.body);
+            visit(&statement.orelse);
+        }
+        Stmt::If(statement) => {
+            visit(&statement.body);
+            for clause in &statement.elif_else_clauses {
+                visit(&clause.body);
+            }
+        }
+        Stmt::With(statement) => visit(&statement.body),
+        Stmt::Match(statement) => {
+            for case in &statement.cases {
+                visit(&case.body);
+            }
+        }
+        Stmt::Try(statement) => {
+            visit(&statement.body);
+            for handler in &statement.handlers {
+                let ExceptHandler::ExceptHandler(handler) = handler;
+                visit(&handler.body);
+            }
+            visit(&statement.orelse);
+            visit(&statement.finalbody);
+        }
+        _ => {}
+    }
+}
+
+fn statement_bound_names(statement: &Stmt) -> Vec<String> {
+    match statement {
+        Stmt::Import(import) => import
+            .names
+            .iter()
+            .map(|alias| {
+                alias.asname.as_ref().map_or_else(
+                    || alias.name.split('.').next().unwrap_or_default().to_owned(),
+                    ToString::to_string,
+                )
+            })
+            .collect(),
+        Stmt::ImportFrom(import) => import
+            .names
+            .iter()
+            .filter(|alias| alias.name.as_str() != "*")
+            .map(|alias| alias.asname.as_ref().unwrap_or(&alias.name).to_string())
+            .collect(),
+        Stmt::FunctionDef(function) => vec![function.name.to_string()],
+        Stmt::ClassDef(class) => vec![class.name.to_string()],
+        Stmt::Assign(assignment) => assignment
+            .targets
+            .iter()
+            .flat_map(expression_bound_names)
+            .collect(),
+        Stmt::AnnAssign(assignment) => expression_bound_names(&assignment.target),
+        Stmt::AugAssign(assignment) => expression_bound_names(&assignment.target),
+        Stmt::For(statement) => expression_bound_names(&statement.target),
+        Stmt::With(statement) => statement
+            .items
+            .iter()
+            .filter_map(|item| item.optional_vars.as_deref())
+            .flat_map(expression_bound_names)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn expression_bound_names(expression: &Expr) -> Vec<String> {
+    match expression {
+        Expr::Name(name) => vec![name.id.to_string()],
+        Expr::List(list) => list.elts.iter().flat_map(expression_bound_names).collect(),
+        Expr::Tuple(tuple) => tuple.elts.iter().flat_map(expression_bound_names).collect(),
+        Expr::Starred(starred) => expression_bound_names(&starred.value),
+        _ => Vec::new(),
     }
 }
 
@@ -982,6 +1324,222 @@ impl Display for ParseErrors {
 }
 
 impl Error for ParseErrors {}
+
+struct ClosedTypeCollector<'a> {
+    path: &'a Path,
+    source: &'a str,
+    target_version: PythonVersion,
+    scope: Vec<String>,
+    excluded_expressions: usize,
+    facts: Vec<ClosedTypeSiteFact>,
+}
+
+impl<'a> ClosedTypeCollector<'a> {
+    fn collect(
+        module: &ModModule,
+        path: &'a Path,
+        source: &'a str,
+        target_version: PythonVersion,
+    ) -> Vec<ClosedTypeSiteFact> {
+        let mut collector = Self {
+            path,
+            source,
+            target_version,
+            scope: Vec::new(),
+            excluded_expressions: 0,
+            facts: Vec::new(),
+        };
+        for statement in &module.body {
+            collector.visit_stmt(statement);
+        }
+        collector.facts
+    }
+
+    fn scope(&self) -> Option<String> {
+        (!self.scope.is_empty()).then(|| self.scope.join("."))
+    }
+
+    fn collect_test(&mut self, expression: &Expr) {
+        let mut tests = Vec::new();
+        collect_direct_tests(expression, self.source, self.target_version, &mut tests);
+        let scope = self.scope();
+        self.facts.extend(tests.into_iter().map(|(range, test)| {
+            ClosedTypeSiteFact::Conditional(ConditionalFact {
+                path: self.path.to_owned(),
+                scope: scope.clone(),
+                range,
+                test,
+            })
+        }));
+    }
+}
+
+impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
+    fn enter_node(
+        &mut self,
+        node: AnyNodeRef<'a>,
+    ) -> ruff_python_ast::visitor::source_order::TraversalSignal {
+        match node {
+            AnyNodeRef::StmtClassDef(class) => self.scope.push(class.name.to_string()),
+            AnyNodeRef::StmtFunctionDef(function) => self.scope.push(function.name.to_string()),
+            AnyNodeRef::StmtMatch(statement) => {
+                self.facts.push(ClosedTypeSiteFact::Match(MatchFact {
+                    path: self.path.to_owned(),
+                    scope: self.scope(),
+                    range: ByteRange::from_ruff(statement.range),
+                    subject_range: ByteRange::from_ruff(statement.subject.range()),
+                    subject: semantic_expr(
+                        &statement.subject,
+                        self.source,
+                        self.target_version,
+                        false,
+                    ),
+                    cases: statement
+                        .cases
+                        .iter()
+                        .map(|case| MatchCaseFact {
+                            pattern: pattern_fact(&case.pattern, self.source, self.target_version),
+                            guarded: case.guard.is_some(),
+                        })
+                        .collect(),
+                }));
+            }
+            AnyNodeRef::StmtIf(statement) => {
+                self.collect_test(&statement.test);
+                for clause in &statement.elif_else_clauses {
+                    if let Some(test) = &clause.test {
+                        self.collect_test(test);
+                    }
+                }
+            }
+            AnyNodeRef::ExprIf(expression) if self.excluded_expressions == 0 => {
+                self.collect_test(&expression.test);
+            }
+            AnyNodeRef::ExprListComp(_)
+            | AnyNodeRef::ExprSetComp(_)
+            | AnyNodeRef::ExprDictComp(_)
+            | AnyNodeRef::ExprGenerator(_)
+            | AnyNodeRef::ExprLambda(_) => self.excluded_expressions += 1,
+            _ => {}
+        }
+        ruff_python_ast::visitor::source_order::TraversalSignal::Traverse
+    }
+
+    fn leave_node(&mut self, node: AnyNodeRef<'a>) {
+        match node {
+            AnyNodeRef::StmtClassDef(_) | AnyNodeRef::StmtFunctionDef(_) => {
+                self.scope.pop();
+            }
+            AnyNodeRef::ExprListComp(_)
+            | AnyNodeRef::ExprSetComp(_)
+            | AnyNodeRef::ExprDictComp(_)
+            | AnyNodeRef::ExprGenerator(_)
+            | AnyNodeRef::ExprLambda(_) => self.excluded_expressions -= 1,
+            _ => {}
+        }
+    }
+}
+
+fn collect_direct_tests(
+    expression: &Expr,
+    source: &str,
+    target_version: PythonVersion,
+    facts: &mut Vec<(ByteRange, DirectTestFact)>,
+) {
+    match expression {
+        Expr::UnaryOp(unary) if unary.op == UnaryOp::Not => {
+            collect_direct_tests(&unary.operand, source, target_version, facts);
+        }
+        Expr::BoolOp(boolean) => {
+            for value in &boolean.values {
+                collect_direct_tests(value, source, target_version, facts);
+            }
+        }
+        Expr::Call(call)
+            if matches!(call.func.as_ref(), Expr::Name(name) if name.id.as_str() == "isinstance")
+                && call.arguments.args.len() == 2
+                && call.arguments.keywords.is_empty() =>
+        {
+            facts.push((
+                ByteRange::from_ruff(call.range),
+                DirectTestFact::IsInstance {
+                    value: semantic_expr(&call.arguments.args[0], source, target_version, false),
+                    member: semantic_expr(&call.arguments.args[1], source, target_version, false),
+                },
+            ));
+        }
+        Expr::Compare(comparison) => {
+            let mut left = comparison.left.as_ref();
+            for (operator, right) in comparison.ops.iter().zip(comparison.comparators.iter()) {
+                if let Some(operator) = comparison_fact(*operator) {
+                    facts.push((
+                        ByteRange::from_ruff(comparison.range),
+                        DirectTestFact::Compare {
+                            left: semantic_expr(left, source, target_version, false),
+                            operator,
+                            right: semantic_expr(right, source, target_version, false),
+                        },
+                    ));
+                }
+                left = right;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn comparison_fact(operator: CmpOp) -> Option<ComparisonFact> {
+    match operator {
+        CmpOp::Eq => Some(ComparisonFact::Equal),
+        CmpOp::NotEq => Some(ComparisonFact::NotEqual),
+        CmpOp::Is => Some(ComparisonFact::Is),
+        CmpOp::IsNot => Some(ComparisonFact::IsNot),
+        _ => None,
+    }
+}
+
+fn pattern_fact(pattern: &Pattern, source: &str, target_version: PythonVersion) -> PatternFact {
+    let range = ByteRange::from_ruff(pattern.range());
+    if pattern.is_irrefutable() {
+        return PatternFact::CatchAll { range };
+    }
+    match pattern {
+        Pattern::MatchValue(pattern) => PatternFact::Value {
+            range,
+            value: semantic_expr(&pattern.value, source, target_version, false),
+        },
+        Pattern::MatchSingleton(pattern) => PatternFact::Singleton {
+            range,
+            value: match pattern.value {
+                Singleton::None => SingletonFact::None,
+                Singleton::True => SingletonFact::True,
+                Singleton::False => SingletonFact::False,
+            },
+        },
+        Pattern::MatchClass(pattern) => PatternFact::Class {
+            range,
+            class: semantic_expr(&pattern.cls, source, target_version, false),
+        },
+        Pattern::MatchAs(pattern) => {
+            pattern
+                .pattern
+                .as_deref()
+                .map_or(PatternFact::Other { range }, |inner| PatternFact::As {
+                    range,
+                    pattern: Box::new(pattern_fact(inner, source, target_version)),
+                })
+        }
+        Pattern::MatchOr(pattern) => PatternFact::Or {
+            range,
+            patterns: pattern
+                .patterns
+                .iter()
+                .map(|pattern| pattern_fact(pattern, source, target_version))
+                .collect(),
+        },
+        _ => PatternFact::Other { range },
+    }
+}
 
 struct NodeCollector {
     nodes: Vec<SyntaxNode>,
