@@ -10,9 +10,9 @@ use num_traits::FromPrimitive;
 use crate::config::TargetVersion;
 use crate::project::{DiscoveredFiles, Project};
 use crate::python::{
-    AssignmentFact, ByteRange, ClassFact, ClosedTypeSiteFact, Comment, FunctionFact, ImportFact,
-    ModuleFacts, ParameterKind, ParseErrors, PythonVersion, SemanticExpr, SourceFile, SourceKind,
-    SyntaxNode, parse_module,
+    AssignmentFact, ByteRange, ClassFact, ClosedTypeSiteFact, Comment, ConstructorFallbackFact,
+    FunctionFact, ImportFact, ModuleFacts, ParameterKind, ParseErrors, PythonVersion, SemanticExpr,
+    SourceFile, SourceKind, SyntaxNode, parse_module,
 };
 
 #[derive(Clone, Debug)]
@@ -340,6 +340,12 @@ impl ProjectGraph {
                 .iter()
                 .map(move |site| (module.as_str(), site))
         })
+    }
+
+    pub fn constructor_fallbacks(&self) -> impl Iterator<Item = &ConstructorFallbackFact> {
+        self.modules
+            .values()
+            .flat_map(|module| &module.facts.constructor_fallbacks)
     }
 
     pub fn site_type(
@@ -816,6 +822,7 @@ impl RawModule {
                 functions: Vec::new(),
                 assignments: Vec::new(),
                 closed_type_sites: Vec::new(),
+                constructor_fallbacks: Vec::new(),
             },
         }
     }
@@ -826,6 +833,9 @@ impl RawModule {
         self.facts.functions.extend(facts.functions);
         self.facts.assignments.extend(facts.assignments);
         self.facts.closed_type_sites.extend(facts.closed_type_sites);
+        self.facts
+            .constructor_fallbacks
+            .extend(facts.constructor_fallbacks);
     }
 }
 

@@ -226,8 +226,7 @@ impl Project {
         &self.root
     }
 
-    #[cfg(test)]
-    fn config_path(&self) -> Option<&Path> {
+    pub(crate) fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
     }
 

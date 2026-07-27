@@ -3,6 +3,7 @@ pub mod rules;
 
 pub(crate) mod config;
 pub(crate) mod ct;
+pub(crate) mod di;
 pub mod diagnostics;
 pub(crate) mod dm;
 #[allow(dead_code)] // Semantic graph queries are consumed by rules in MAT-7 and MAT-9.
@@ -122,6 +123,15 @@ fn check(
             sources.insert(source.clone());
         }
     }
+    if let Some(config_path) = project.config_path() {
+        let source = std::fs::read_to_string(config_path).map_err(|error| {
+            CliError::Configuration(format!(
+                "failed to read configuration {}: {error}",
+                config_path.display()
+            ))
+        })?;
+        sources.insert(python::SourceFile::new(config_path, source));
+    }
     let (exceptions, directive_errors) =
         suppression::DesignExceptions::parse(build.files(), &project.config().per_file_ignores);
     if !build.syntax_errors().is_empty() || !directive_errors.is_empty() {
@@ -145,19 +155,31 @@ fn check(
         return Ok(ExitStatus::Violations);
     }
 
+    let analyzed_files = build
+        .files()
+        .iter()
+        .filter(|file| file.diagnostic)
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
     let graph = build
         .into_rule_graph()
         .expect("syntax errors were checked before rule execution");
 
-    // MAT-7, MAT-9, and MAT-11 add concrete rule findings to this shared pipeline.
-    // Keeping execution below the syntax/directive guard prevents partial analysis.
+    // Keeping rule execution below the syntax/directive guard prevents partial analysis.
     let mut rule_diagnostics = ct::run(&graph, &project.config().enabled_rules);
+    rule_diagnostics.extend(di::run(&graph, &project.config().enabled_rules));
     rule_diagnostics.extend(dm::run(
         &graph,
         &project.config().enabled_rules,
         &project.config().dm002,
     ));
-    let diagnostics = exceptions.apply(rule_diagnostics, project.root());
+    let diagnostics = exceptions.apply_with_hygiene(
+        rule_diagnostics,
+        project.root(),
+        &project.config().enabled_rules,
+        &analyzed_files,
+        project.config_path(),
+    );
     match output_format {
         OutputFormat::Human => diagnostics.write_human(output, project.root(), &sources),
         OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),

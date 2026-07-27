@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_ast::visitor::source_order::SourceOrderVisitor;
 use ruff_python_ast::{
-    AnyNodeRef, CmpOp, ExceptHandler, Expr, ModModule, NodeKind, Operator, Pattern, PySourceType,
-    PythonVersion as RuffPythonVersion, Singleton, Stmt, UnaryOp,
+    AnyNodeRef, BoolOp, CmpOp, ExceptHandler, Expr, ModModule, NodeKind, Number, Operator, Pattern,
+    PySourceType, PythonVersion as RuffPythonVersion, Singleton, Stmt, UnaryOp,
 };
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_text_size::{Ranged, TextRange as RuffTextRange};
@@ -323,6 +323,23 @@ pub struct ModuleFacts {
     pub functions: Vec<FunctionFact>,
     pub assignments: Vec<AssignmentFact>,
     pub closed_type_sites: Vec<ClosedTypeSiteFact>,
+    pub constructor_fallbacks: Vec<ConstructorFallbackFact>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConstructorFallbackFact {
+    pub path: PathBuf,
+    pub range: ByteRange,
+    pub parameter: String,
+    pub kind: ConstructorFallbackKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConstructorFallbackKind {
+    DirectDefault,
+    OrExpression,
+    ConditionalExpression,
+    NoneAssignment,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -638,6 +655,7 @@ fn extract_module_facts(
         functions,
         assignments,
         closed_type_sites: ClosedTypeCollector::collect(module, path, source, target_version),
+        constructor_fallbacks: ConstructorFallbackCollector::collect(module, path),
     }
 }
 
@@ -1257,6 +1275,247 @@ fn parse_forward_annotation(
         target_version,
         true,
     ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConstructorDefault {
+    None,
+    Falsy,
+    Other,
+}
+
+struct ConstructorFallbackCollector<'a> {
+    path: &'a Path,
+    scopes: Vec<SyntaxKind>,
+    facts: Vec<ConstructorFallbackFact>,
+}
+
+impl<'a> ConstructorFallbackCollector<'a> {
+    fn collect(module: &ModModule, path: &'a Path) -> Vec<ConstructorFallbackFact> {
+        let mut collector = Self {
+            path,
+            scopes: Vec::new(),
+            facts: Vec::new(),
+        };
+        for statement in &module.body {
+            collector.visit_stmt(statement);
+        }
+        collector.facts
+    }
+
+    fn analyze(&mut self, function: &ruff_python_ast::StmtFunctionDef) {
+        let defaults = function
+            .parameters
+            .iter_non_variadic_params()
+            .filter_map(|parameter| {
+                let default = parameter.default()?;
+                if let Expr::Call(call) = default {
+                    self.facts.push(ConstructorFallbackFact {
+                        path: self.path.to_owned(),
+                        range: ByteRange::from_ruff(call.range),
+                        parameter: parameter.name().to_string(),
+                        kind: ConstructorFallbackKind::DirectDefault,
+                    });
+                }
+                Some((parameter.name().to_string(), constructor_default(default)))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        collect_body_fallbacks(&function.body, self.path, &defaults, &mut self.facts);
+    }
+}
+
+impl<'a> SourceOrderVisitor<'a> for ConstructorFallbackCollector<'_> {
+    fn enter_node(
+        &mut self,
+        node: AnyNodeRef<'a>,
+    ) -> ruff_python_ast::visitor::source_order::TraversalSignal {
+        match node {
+            AnyNodeRef::StmtClassDef(_) => self.scopes.push(SyntaxKind::ClassDefinition),
+            AnyNodeRef::StmtFunctionDef(function) => {
+                if function.name.as_str() == "__init__"
+                    && self.scopes.last() == Some(&SyntaxKind::ClassDefinition)
+                {
+                    self.analyze(function);
+                }
+                self.scopes.push(SyntaxKind::FunctionDefinition);
+            }
+            _ => {}
+        }
+        ruff_python_ast::visitor::source_order::TraversalSignal::Traverse
+    }
+
+    fn leave_node(&mut self, node: AnyNodeRef<'a>) {
+        if matches!(
+            node,
+            AnyNodeRef::StmtClassDef(_) | AnyNodeRef::StmtFunctionDef(_)
+        ) {
+            self.scopes.pop();
+        }
+    }
+}
+
+fn constructor_default(expression: &Expr) -> ConstructorDefault {
+    match expression {
+        Expr::NoneLiteral(_) => ConstructorDefault::None,
+        Expr::BooleanLiteral(boolean) if !boolean.value => ConstructorDefault::Falsy,
+        Expr::NumberLiteral(number)
+            if match &number.value {
+                Number::Int(value) => value.as_u64() == Some(0),
+                Number::Float(value) => *value == 0.0,
+                Number::Complex { real, imag } => *real == 0.0 && *imag == 0.0,
+            } =>
+        {
+            ConstructorDefault::Falsy
+        }
+        Expr::StringLiteral(string) if string.value.is_empty() => ConstructorDefault::Falsy,
+        Expr::BytesLiteral(bytes) if bytes.value.is_empty() => ConstructorDefault::Falsy,
+        Expr::Tuple(tuple) if tuple.elts.is_empty() => ConstructorDefault::Falsy,
+        Expr::List(list) if list.elts.is_empty() => ConstructorDefault::Falsy,
+        Expr::Dict(dict) if dict.items.is_empty() => ConstructorDefault::Falsy,
+        Expr::Set(set) if set.elts.is_empty() => ConstructorDefault::Falsy,
+        _ => ConstructorDefault::Other,
+    }
+}
+
+fn collect_body_fallbacks(
+    statements: &[Stmt],
+    path: &Path,
+    defaults: &std::collections::BTreeMap<String, ConstructorDefault>,
+    facts: &mut Vec<ConstructorFallbackFact>,
+) {
+    for statement in statements {
+        if let Some(value) = assignment_value(statement) {
+            collect_assignment_expression_fallback(value, path, defaults, facts);
+        }
+        if let Stmt::If(statement) = statement
+            && let Some(parameter) = none_comparison_parameter(&statement.test, CmpOp::Is)
+            && defaults.get(parameter) == Some(&ConstructorDefault::None)
+        {
+            collect_none_assignments(&statement.body, path, parameter, facts);
+        }
+        if !matches!(statement, Stmt::FunctionDef(_) | Stmt::ClassDef(_)) {
+            for_each_child_suite(statement, |suite| {
+                collect_body_fallbacks(suite, path, defaults, facts);
+            });
+        }
+    }
+}
+
+fn assignment_value(statement: &Stmt) -> Option<&Expr> {
+    match statement {
+        Stmt::Assign(assignment) => Some(&assignment.value),
+        Stmt::AnnAssign(assignment) => assignment.value.as_deref(),
+        _ => None,
+    }
+}
+
+fn collect_assignment_expression_fallback(
+    expression: &Expr,
+    path: &Path,
+    defaults: &std::collections::BTreeMap<String, ConstructorDefault>,
+    facts: &mut Vec<ConstructorFallbackFact>,
+) {
+    if let Expr::BoolOp(boolean) = expression
+        && boolean.op == BoolOp::Or
+        && boolean.values.len() == 2
+        && let Expr::Name(parameter) = &boolean.values[0]
+        && matches!(
+            defaults.get(parameter.id.as_str()),
+            Some(ConstructorDefault::None | ConstructorDefault::Falsy)
+        )
+        && let Expr::Call(call) = &boolean.values[1]
+    {
+        facts.push(ConstructorFallbackFact {
+            path: path.to_owned(),
+            range: ByteRange::from_ruff(call.range),
+            parameter: parameter.id.to_string(),
+            kind: ConstructorFallbackKind::OrExpression,
+        });
+    }
+    if let Expr::If(conditional) = expression
+        && let Some((parameter, call)) = conditional_fallback(conditional)
+        && defaults.get(parameter) == Some(&ConstructorDefault::None)
+    {
+        facts.push(ConstructorFallbackFact {
+            path: path.to_owned(),
+            range: ByteRange::from_ruff(call.range),
+            parameter: parameter.to_owned(),
+            kind: ConstructorFallbackKind::ConditionalExpression,
+        });
+    }
+}
+
+fn conditional_fallback(
+    conditional: &ruff_python_ast::ExprIf,
+) -> Option<(&str, &ruff_python_ast::ExprCall)> {
+    if let Some(parameter) = none_comparison_parameter(&conditional.test, CmpOp::Is)
+        && matches!(conditional.orelse.as_ref(), Expr::Name(name) if name.id.as_str() == parameter)
+        && let Expr::Call(call) = conditional.body.as_ref()
+    {
+        return Some((parameter, call));
+    }
+    if let Some(parameter) = none_comparison_parameter(&conditional.test, CmpOp::IsNot)
+        && matches!(conditional.body.as_ref(), Expr::Name(name) if name.id.as_str() == parameter)
+        && let Expr::Call(call) = conditional.orelse.as_ref()
+    {
+        return Some((parameter, call));
+    }
+    None
+}
+
+fn none_comparison_parameter(expression: &Expr, operator: CmpOp) -> Option<&str> {
+    let Expr::Compare(comparison) = expression else {
+        return None;
+    };
+    if comparison.ops.len() != 1
+        || comparison.ops[0] != operator
+        || comparison.comparators.len() != 1
+    {
+        return None;
+    }
+    match (comparison.left.as_ref(), &comparison.comparators[0]) {
+        (Expr::Name(name), Expr::NoneLiteral(_)) => Some(name.id.as_str()),
+        (Expr::NoneLiteral(_), Expr::Name(name)) => Some(name.id.as_str()),
+        _ => None,
+    }
+}
+
+fn collect_none_assignments(
+    statements: &[Stmt],
+    path: &Path,
+    parameter: &str,
+    facts: &mut Vec<ConstructorFallbackFact>,
+) {
+    for statement in statements {
+        let targets = match statement {
+            Stmt::Assign(assignment) => assignment.targets.as_slice(),
+            Stmt::AnnAssign(assignment) => std::slice::from_ref(assignment.target.as_ref()),
+            _ => &[],
+        };
+        if targets
+            .iter()
+            .any(|target| target_matches_parameter(target, parameter))
+            && let Some(Expr::Call(call)) = assignment_value(statement)
+        {
+            facts.push(ConstructorFallbackFact {
+                path: path.to_owned(),
+                range: ByteRange::from_ruff(call.range),
+                parameter: parameter.to_owned(),
+                kind: ConstructorFallbackKind::NoneAssignment,
+            });
+        }
+    }
+}
+
+fn target_matches_parameter(target: &Expr, parameter: &str) -> bool {
+    match target {
+        Expr::Name(name) => name.id.as_str() == parameter,
+        Expr::Attribute(attribute) => {
+            attribute.attr.as_str() == parameter
+                && matches!(attribute.value.as_ref(), Expr::Name(name) if name.id.as_str() == "self")
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

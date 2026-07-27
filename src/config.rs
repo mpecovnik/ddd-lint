@@ -8,6 +8,7 @@ use std::str::FromStr;
 use globset::{GlobBuilder, GlobMatcher};
 use serde::Deserialize;
 
+use crate::python::ByteRange;
 use crate::rules::{RULES, RuleCode};
 
 const DEFAULT_MIN_NULLABLE_FIELDS: usize = 3;
@@ -73,7 +74,9 @@ impl Default for Dm002Config {
 #[derive(Clone, Debug)]
 pub struct PerFileIgnore {
     pub pattern: String,
+    pub pattern_range: ByteRange,
     pub rules: Vec<RuleCode>,
+    pub rule_ranges: Vec<ByteRange>,
     pub reason: String,
     matcher: GlobMatcher,
 }
@@ -247,21 +250,27 @@ impl PerFileIgnore {
 
     fn from_raw(index: usize, raw: RawPerFileIgnore) -> Result<Self, ConfigError> {
         let location = format!("per-file-ignores[{}]", index + 1);
-        if raw.pattern.trim().is_empty() {
+        if raw.pattern.get_ref().trim().is_empty() {
             return Err(ConfigError::new(format!(
                 "{location}.pattern must not be empty"
             )));
         }
-        validate_pattern(&format!("{location}.pattern"), &raw.pattern)?;
+        validate_pattern(&format!("{location}.pattern"), raw.pattern.get_ref())?;
         if raw.rules.is_empty() {
             return Err(ConfigError::new(format!(
                 "{location}.rules must contain at least one full rule code"
             )));
         }
+        let rule_ranges = raw
+            .rules
+            .iter()
+            .map(|value| ByteRange::new(value.span().start, value.span().end))
+            .collect();
         let rules = raw
             .rules
             .into_iter()
             .map(|value| {
+                let value = value.into_inner();
                 let code = RuleCode::from_str(&value).map_err(|_| {
                     ConfigError::new(format!(
                         "{location}.rules contains `{value}`; expected a full rule code"
@@ -282,9 +291,11 @@ impl PerFileIgnore {
         }
 
         Ok(Self {
-            matcher: build_glob(&raw.pattern)?.compile_matcher(),
-            pattern: raw.pattern,
+            matcher: build_glob(raw.pattern.get_ref())?.compile_matcher(),
+            pattern_range: ByteRange::new(raw.pattern.span().start, raw.pattern.span().end),
+            pattern: raw.pattern.into_inner(),
             rules,
+            rule_ranges,
             reason: raw.reason,
         })
     }
@@ -383,8 +394,8 @@ struct RawDm002Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPerFileIgnore {
-    pattern: String,
-    rules: Vec<String>,
+    pattern: toml::Spanned<String>,
+    rules: Vec<toml::Spanned<String>>,
     reason: String,
 }
 

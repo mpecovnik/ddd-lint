@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -42,13 +43,34 @@ impl DesignExceptions {
         )
     }
 
+    #[cfg(test)]
     pub fn apply(&self, diagnostics: Vec<Diagnostic>, root: &Path) -> DiagnosticSet {
-        DiagnosticSet::new(
-            diagnostics
-                .into_iter()
-                .filter(|diagnostic| !self.suppresses(diagnostic, root))
-                .collect(),
-        )
+        self.apply_with_hygiene(diagnostics, root, &[], &[], None)
+    }
+
+    pub fn apply_with_hygiene(
+        &self,
+        diagnostics: Vec<Diagnostic>,
+        root: &Path,
+        enabled: &[RuleCode],
+        analyzed_files: &[PathBuf],
+        config_path: Option<&Path>,
+    ) -> DiagnosticSet {
+        let mut remaining = diagnostics
+            .iter()
+            .filter(|diagnostic| !self.suppresses(diagnostic, root))
+            .cloned()
+            .collect::<Vec<_>>();
+        if enabled.iter().any(|rule| rule.as_str() == "SUP001") {
+            remaining.extend(self.unused_diagnostics(
+                &diagnostics,
+                root,
+                enabled,
+                analyzed_files,
+                config_path,
+            ));
+        }
+        DiagnosticSet::new(remaining)
     }
 
     fn suppresses(&self, diagnostic: &Diagnostic, root: &Path) -> bool {
@@ -68,6 +90,92 @@ impl DesignExceptions {
                 && exception.scope.contains(diagnostic.range.start())
         })
     }
+
+    fn unused_diagnostics(
+        &self,
+        diagnostics: &[Diagnostic],
+        root: &Path,
+        enabled: &[RuleCode],
+        analyzed_files: &[PathBuf],
+        config_path: Option<&Path>,
+    ) -> Vec<Diagnostic> {
+        let enabled = enabled
+            .iter()
+            .map(|rule| rule.as_str())
+            .collect::<BTreeSet<_>>();
+        let sup = RuleCode::from_str("SUP001").expect("SUP001 is registered");
+        let mut unused = Vec::new();
+        for exception in &self.source {
+            for code in &exception.codes {
+                let used = enabled.contains(code.as_str())
+                    && diagnostics.iter().any(|diagnostic| {
+                        diagnostic.path == exception.path
+                            && diagnostic.rule == *code
+                            && exception.scope.contains(diagnostic.range.start())
+                    });
+                if !used {
+                    unused.push(Diagnostic::new(
+                        &exception.path,
+                        exception.range,
+                        sup,
+                        format!(
+                            "source design exception for {} suppresses no enabled diagnostic",
+                            code.as_str()
+                        ),
+                        "remove the unused rule code or enable the diagnostic it documents",
+                    ));
+                }
+            }
+        }
+        let Some(config_path) = config_path else {
+            return unused;
+        };
+        for entry in &self.configuration {
+            let matching_files = analyzed_files
+                .iter()
+                .filter(|path| entry.matches(path.strip_prefix(root).unwrap_or(path)))
+                .collect::<Vec<_>>();
+            for (index, code) in entry.rules.iter().enumerate() {
+                let used = !matching_files.is_empty()
+                    && enabled.contains(code.as_str())
+                    && diagnostics.iter().any(|diagnostic| {
+                        diagnostic.rule == *code
+                            && entry.matches(
+                                diagnostic
+                                    .path
+                                    .strip_prefix(root)
+                                    .unwrap_or(&diagnostic.path),
+                            )
+                    });
+                if !used {
+                    let no_files = matching_files.is_empty();
+                    unused.push(Diagnostic::new(
+                        config_path,
+                        entry
+                            .rule_ranges
+                            .get(index)
+                            .copied()
+                            .unwrap_or(entry.pattern_range),
+                        sup,
+                        if no_files {
+                            format!(
+                                "per-file design exception for {} has pattern `{}` matching no analyzed file",
+                                code.as_str(),
+                                entry.pattern
+                            )
+                        } else {
+                            format!(
+                                "per-file design exception for {} suppresses no enabled diagnostic",
+                                code.as_str()
+                            )
+                        },
+                        "remove the unused rule code or narrow the exception to an active diagnostic",
+                    ));
+                }
+            }
+        }
+        unused
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +184,7 @@ struct SourceException {
     codes: Vec<RuleCode>,
     #[allow(dead_code)]
     reason: String,
+    range: ByteRange,
     scope: Scope,
 }
 
@@ -169,6 +278,7 @@ fn parse_file(
             path: file.path.clone(),
             codes: parsed.codes,
             reason: parsed.reason,
+            range: comment.range,
             scope,
         });
     }

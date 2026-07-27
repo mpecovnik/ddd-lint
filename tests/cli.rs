@@ -746,3 +746,282 @@ fn dm_rules_resolve_cross_file_model_aliases_and_documented_field_forms() {
     assert!(!findings.contains("inherited`"), "{findings}");
     assert!(!findings.contains("label`"), "{findings}");
 }
+
+#[test]
+fn di001_detects_every_documented_hidden_constructor_fallback_form() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DI001\"]\n",
+    );
+    let source = "class NoopRepository: pass\nclass SystemClock: pass\nclass DefaultGateway: pass\nclass Direct:\n    def __init__(self, repository=NoopRepository()):\n        self.repository = repository\nclass OrFallback:\n    def __init__(self, clock=None):\n        self.clock = clock or SystemClock()\nclass ConditionalFallback:\n    def __init__(self, gateway=None):\n        self.gateway = gateway if gateway is not None else DefaultGateway()\nclass GuardedFallback:\n    def __init__(self, repository=None):\n        if repository is None:\n            repository = NoopRepository()\n        self.repository = repository\n";
+    write(&directory.path().join("model.py"), source);
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .args(["check", "--output-format", "json"])
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("valid JSON diagnostics");
+    let diagnostics = diagnostics.as_array().expect("diagnostic array");
+    assert_eq!(diagnostics.len(), 4, "{}", stdout(&output));
+    let expected = [
+        ("NoopRepository()", 5),
+        ("SystemClock()", 9),
+        ("DefaultGateway()", 12),
+        ("NoopRepository()", 16),
+    ];
+    for (diagnostic, (call, line)) in diagnostics.iter().zip(expected) {
+        assert_eq!(diagnostic["code"], "DI001");
+        assert_eq!(diagnostic["range"]["start"]["line"], line);
+        let source_line = source.lines().nth(line - 1).expect("source line");
+        assert_eq!(
+            diagnostic["range"]["start"]["column"],
+            source_line.find(call).expect("call on line") + 1
+        );
+    }
+}
+
+#[test]
+fn di001_is_limited_to_init_and_accepts_explicit_injection_and_plain_defaults() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DI001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "DEFAULT_REPOSITORY = object()\nclass NoopRepository: pass\nclass InMemoryRepository: pass\ndef ordinary(repository=NoopRepository()): return repository\nclass Service:\n    def __init__(self, repository, retries=3, default=DEFAULT_REPOSITORY):\n        self.repository = repository\n        self.retries = retries\n        self.default = default\n    def __new__(cls, repository=NoopRepository()): return super().__new__(cls)\n    @classmethod\n    def create(cls, repository=NoopRepository()): return cls(repository)\nclass AuditOnly:\n    def __init__(self, repository=None):\n        if repository is None:\n            self.audit.repository = NoopRepository()\n        self.repository = repository\nservice = Service(repository=InMemoryRepository())\nnoop = Service(repository=NoopRepository())\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn di001_respects_source_design_exception_at_fallback_call() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DI001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "class SystemClock: pass\nclass LocalPreview:\n    def __init__(self, clock=None):\n        self.clock = clock or SystemClock()  # ddd-lint: ignore[DI001] - Preview is a self-contained process boundary\nclass EagerPreview:\n    def __init__(self, clock=SystemClock()):  # ddd-lint: ignore[DI001] - Definition-time singleton is intentional\n        self.clock = clock\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert!(output.status.success(), "{}", stdout(&output));
+}
+
+#[test]
+fn sup001_evaluates_source_directives_per_code_against_enabled_diagnostics() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM003\", \"SUP001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from pydantic import BaseModel\nclass Customer(BaseModel):\n    name: str | None  # ddd-lint: ignore[DM001, DM003] - Imported records may omit names\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("SUP001 unused-suppression").count(),
+        1,
+        "{findings}"
+    );
+    assert!(findings.contains("model.py:3:23-3:"), "{findings}");
+    assert!(findings.contains("exception for DM003"), "{findings}");
+    assert!(!findings.contains("exception for DM001"), "{findings}");
+    assert!(
+        !findings.contains("DM001 nullable-model-field"),
+        "{findings}"
+    );
+}
+
+#[test]
+fn sup001_treats_suppressions_for_unselected_rules_as_unused() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"SUP001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "value = 1  # ddd-lint: ignore[DM001] - used by broader policy\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("SUP001 unused-suppression").count(),
+        1,
+        "{findings}"
+    );
+    assert!(findings.contains("exception for DM001"), "{findings}");
+}
+
+#[test]
+fn sup001_accepts_used_source_exception_and_reports_documented_stale_example() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"SUP001\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from pydantic import BaseModel\nclass Customer(BaseModel):\n    missing: str | None  # ddd-lint: ignore[DM001] - Absence is domain-significant\n    name: str  # ddd-lint: ignore[DM001] - Imported records may omit names\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("SUP001 unused-suppression").count(),
+        1,
+        "{findings}"
+    );
+    assert!(findings.contains("model.py:4:"), "{findings}");
+}
+
+#[test]
+fn sup001_evaluates_structured_config_per_code_and_anchors_rule_values() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM003\", \"SUP001\"]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"model.py\"\nrules = [\"DM001\", \"DM003\"]\nreason = \"Imported record schema\"\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from pydantic import BaseModel\nclass Customer(BaseModel):\n    name: str | None\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("SUP001 unused-suppression").count(),
+        1,
+        "{findings}"
+    );
+    assert!(findings.contains("pyproject.toml:5:19-5:26"), "{findings}");
+    assert!(findings.contains("exception for DM003"), "{findings}");
+}
+
+#[test]
+fn sup001_reports_every_code_when_config_pattern_matches_no_analyzed_file() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"DM003\", \"SUP001\"]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"missing/**\"\nrules = [\"DM001\", \"DM003\"]\nreason = \"Legacy generated models\"\n",
+    );
+    write(&directory.path().join("model.py"), "value = 1\n");
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert_eq!(
+        findings.matches("SUP001 unused-suppression").count(),
+        2,
+        "{findings}"
+    );
+    assert_eq!(
+        findings.matches("matching no analyzed file").count(),
+        2,
+        "{findings}"
+    );
+    assert!(findings.contains("DM001"), "{findings}");
+    assert!(findings.contains("DM003"), "{findings}");
+}
+
+#[test]
+fn project_ignore_disables_sup001_without_invalidating_other_exceptions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\", \"SUP001\"]\nignore = [\"SUP001\"]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"model.py\"\nrules = [\"DM001\"]\nreason = \"Retained for another policy profile\"\n",
+    );
+    write(&directory.path().join("model.py"), "value = 1\n");
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn sup001_remains_invalid_in_local_source_and_config_exceptions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("model.py"),
+        "value = 1  # ddd-lint: ignore[SUP001] - circular suppression\n",
+    );
+    let source = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(source.status.code(), Some(1));
+    assert!(stdout(&source).contains("cannot suppress SUP001"));
+
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"model.py\"\nrules = [\"SUP001\"]\nreason = \"Circular suppression\"\n",
+    );
+    write(&directory.path().join("model.py"), "value = 1\n");
+    let config = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(config.status.code(), Some(2));
+    assert!(stderr(&config).contains("rules cannot contain SUP001"));
+}
