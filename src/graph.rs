@@ -10,8 +10,9 @@ use num_traits::FromPrimitive;
 use crate::config::TargetVersion;
 use crate::project::{DiscoveredFiles, Project};
 use crate::python::{
-    AssignmentFact, ByteRange, ClassFact, FunctionFact, ImportFact, ModuleFacts, ParameterKind,
-    ParseErrors, PythonVersion, SemanticExpr, SourceKind, parse_module,
+    AssignmentFact, ByteRange, ClassFact, Comment, FunctionFact, ImportFact, ModuleFacts,
+    ParameterKind, ParseErrors, PythonVersion, SemanticExpr, SourceFile, SourceKind, SyntaxNode,
+    parse_module,
 };
 
 #[derive(Clone, Debug)]
@@ -30,6 +31,9 @@ pub struct GraphFile {
     pub module: Option<String>,
     pub source_kind: SourceKind,
     pub diagnostic: bool,
+    pub source: Option<SourceFile>,
+    pub comments: Vec<Comment>,
+    pub nodes: Vec<SyntaxNode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,8 +140,26 @@ pub struct Discriminator {
 
 #[derive(Debug)]
 pub struct GraphBuild {
-    pub graph: ProjectGraph,
-    pub syntax_errors: Vec<ParseErrors>,
+    graph: ProjectGraph,
+    syntax_errors: Vec<ParseErrors>,
+}
+
+impl GraphBuild {
+    pub fn files(&self) -> &[GraphFile] {
+        self.graph.files()
+    }
+
+    pub fn syntax_errors(&self) -> &[ParseErrors] {
+        &self.syntax_errors
+    }
+
+    pub fn into_rule_graph(self) -> Result<ProjectGraph, Vec<ParseErrors>> {
+        if self.syntax_errors.is_empty() {
+            Ok(self.graph)
+        } else {
+            Err(self.syntax_errors)
+        }
+    }
 }
 
 impl ProjectGraph {
@@ -205,9 +227,16 @@ impl ProjectGraph {
                 module: module_identity.as_ref().map(|(name, _)| name.clone()),
                 source_kind,
                 diagnostic: source_kind == SourceKind::Python && diagnostic_paths.contains(path),
+                source: None,
+                comments: Vec::new(),
+                nodes: Vec::new(),
             });
             match parse_module(path, source, target_version) {
                 Ok(parsed) => {
+                    let file = files.last_mut().expect("graph file was inserted");
+                    file.source = Some(parsed.source().clone());
+                    file.comments = parsed.comments().to_vec();
+                    file.nodes = parsed.nodes().to_vec();
                     if let Some((module_name, is_package)) = module_identity {
                         let module = modules
                             .entry(module_name.clone())
@@ -215,7 +244,13 @@ impl ProjectGraph {
                         module.merge(parsed.facts().clone());
                     }
                 }
-                Err(errors) => syntax_errors.push(errors),
+                Err(errors) => {
+                    let file = files.last_mut().expect("graph file was inserted");
+                    file.source = Some(errors.source().clone());
+                    file.comments = errors.comments().to_vec();
+                    file.nodes = errors.nodes().to_vec();
+                    syntax_errors.push(errors);
+                }
             }
         }
 
@@ -2069,5 +2104,6 @@ Unsafe = Literal[1, True]
                 .collect::<Vec<_>>(),
             ["a.py", "b.py"]
         );
+        assert!(build.into_rule_graph().is_err());
     }
 }

@@ -82,7 +82,7 @@ fn rule_prints_stable_summary() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "DM001: nullable-model-field\nDocumentation: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md\n"
+        "DM001: nullable-model-field\nFamily: Domain model (DM)\nConfiguration: none\nDocumentation: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md\n"
     );
 }
 
@@ -103,7 +103,7 @@ fn config_reports_zero_selected_rules() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "select = []\nignore = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n"
+        "select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n"
     );
 }
 
@@ -174,8 +174,203 @@ fn syntax_error_exits_one_even_with_no_selected_rules() {
     assert_eq!(output.status.code(), Some(1));
     let diagnostic = stdout(&output);
     assert!(
-        diagnostic.contains("broken.py:1:12: invalid Python syntax"),
+        diagnostic.contains("broken.py:1:12-1:13: syntax-error: invalid Python syntax"),
         "{diagnostic}"
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn json_output_is_stable_with_zero_rules() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(&directory.path().join("model.py"), "value = 1\n");
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .args(["check", "--output-format", "json"])
+        .output()
+        .expect("ddd-lint should run");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "[]\n");
+}
+
+#[test]
+fn malformed_source_directive_exits_one_with_human_and_json_findings() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("model.py"),
+        "value = 1  # ddd-lint: ignore[DM001]- missing spaces\n",
+    );
+
+    let human = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(human.status.code(), Some(1));
+    assert_eq!(
+        stdout(&human),
+        "model.py:1:12-1:53: invalid-source-directive: ddd-lint directive requires the exact ` - ` reason delimiter\n"
+    );
+
+    let json = ddd_lint()
+        .current_dir(directory.path())
+        .args(["check", "--output-format", "json"])
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(json.status.code(), Some(1));
+    let value: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("valid JSON diagnostics");
+    assert_eq!(value[0]["kind"], "invalid-source-directive");
+    assert_eq!(value[0]["path"], "model.py");
+    assert_eq!(value[0]["range"]["start"]["line"], 1);
+    assert_eq!(value[0]["range"]["start"]["column"], 12);
+}
+
+#[test]
+fn valid_source_directives_stay_clean_with_zero_rules() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("model.py"),
+        "#!/usr/bin/env python\n# coding: utf-8\n# ddd-lint: file-ignore[DM003] - generated schema\n# ddd-lint: ignore[DM001] - decorated declaration\n@decorator\ndef build():\n    value = (\n        1  # ddd-lint: ignore[CT003] - protocol branch\n        + 2\n    )\n    return value\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn malformed_stub_directives_are_excluded() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("model.pyi"),
+        "# ddd-lint: ignore[UNKNOWN]\nvalue: int\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn invalid_per_file_exception_exits_two() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"tests/**\"\nrules = [\"ALL\"]\nreason = \"Too broad\"\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("expected a full rule code"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn resolved_config_expands_selectors_and_prints_rule_and_exception_settings() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM\", \"DI001\"]\nignore = [\"DM003\"]\n[tool.ddd-lint.rules.DM002]\nmin-nullable-fields = 4\nmin-nullable-ratio = 0.5\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"tests/**\"\nrules = [\"DM001\"]\nreason = \"External payload fixture\"\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("config")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rendered = stdout(&output);
+    assert!(
+        rendered.contains("enabled-rules = [\"DM001\", \"DM002\", \"DI001\"]"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("min-nullable-fields = 4"), "{rendered}");
+    assert!(rendered.contains("min-nullable-ratio = 0.5"), "{rendered}");
+    assert!(rendered.contains("pattern = \"tests/**\""), "{rendered}");
+    assert!(
+        rendered.contains("reason = \"External payload fixture\""),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn configurable_rule_prints_registered_defaults() {
+    let output = run(&["rule", "DM002"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stdout(&output)
+            .contains("Configuration:\n  min-nullable-fields = 3\n  min-nullable-ratio = 0.30\n")
+    );
+}
+
+#[test]
+fn malformed_directive_survives_syntax_error_guard() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("broken.py"),
+        "# ddd-lint: ignore[DM001]- malformed\ndef broken(:\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(
+        findings.contains(
+            "invalid-source-directive: ddd-lint directive requires the exact ` - ` reason delimiter"
+        ),
+        "{findings}"
+    );
+    assert!(
+        findings.contains("syntax-error: invalid Python syntax"),
+        "{findings}"
+    );
+}
+
+#[test]
+fn misplaced_directive_survives_syntax_error_guard() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("broken.py"),
+        "# ddd-lint: ignore[DM001] - reason\n\ndef broken(:\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let findings = stdout(&output);
+    assert!(
+        findings.contains("invalid-source-directive: own-line ignore must immediately precede a logical statement without a blank line or unrelated comment"),
+        "{findings}"
+    );
+    assert!(
+        findings.contains("syntax-error: invalid Python syntax"),
+        "{findings}"
+    );
 }

@@ -250,6 +250,7 @@ dependencies = [
  "ruff_python_parser",
  "ruff_text_size",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "tracing",
@@ -850,6 +851,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.151"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
 ]
 
 [[package]]

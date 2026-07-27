@@ -109,6 +109,12 @@ impl Config {
     pub fn write(&self, output: &mut dyn Write) -> io::Result<()> {
         writeln!(output, "select = {}", format_strings(&self.select))?;
         writeln!(output, "ignore = {}", format_strings(&self.ignore))?;
+        let enabled = self
+            .enabled_rules
+            .iter()
+            .map(|rule| rule.as_str().to_owned())
+            .collect::<Vec<_>>();
+        writeln!(output, "enabled-rules = {}", format_strings(&enabled))?;
         let src = self
             .src
             .iter()
@@ -116,7 +122,32 @@ impl Config {
             .collect::<Vec<_>>();
         writeln!(output, "src = {}", format_strings(&src))?;
         writeln!(output, "target-version = \"{}\"", self.target_version)?;
-        writeln!(output, "exclude = {}", format_strings(&self.exclude))
+        writeln!(output, "exclude = {}", format_strings(&self.exclude))?;
+        writeln!(output)?;
+        writeln!(output, "[rules.DM002]")?;
+        writeln!(
+            output,
+            "min-nullable-fields = {}",
+            self.dm002.min_nullable_fields
+        )?;
+        writeln!(
+            output,
+            "min-nullable-ratio = {}",
+            self.dm002.min_nullable_ratio
+        )?;
+        for entry in &self.per_file_ignores {
+            writeln!(output)?;
+            writeln!(output, "[[per-file-ignores]]")?;
+            writeln!(output, "pattern = {}", format_string(&entry.pattern))?;
+            let rules = entry
+                .rules
+                .iter()
+                .map(|rule| rule.as_str().to_owned())
+                .collect::<Vec<_>>();
+            writeln!(output, "rules = {}", format_strings(&rules))?;
+            writeln!(output, "reason = {}", format_string(&entry.reason))?;
+        }
+        Ok(())
     }
 
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
@@ -130,10 +161,10 @@ impl Config {
             .filter(|rule| {
                 select
                     .iter()
-                    .any(|selector| selector_matches(selector, rule.code))
+                    .any(|selector| selector_matches(selector, rule))
                     && !ignore
                         .iter()
-                        .any(|selector| selector_matches(selector, rule.code))
+                        .any(|selector| selector_matches(selector, rule))
             })
             .map(|rule| RuleCode::from_str(rule.code).expect("registry rule codes are valid"))
             .collect();
@@ -406,10 +437,7 @@ pub fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ConfigErro
 
 fn validate_selectors(field: &str, selectors: &[String]) -> Result<(), ConfigError> {
     for selector in selectors {
-        if !RULES
-            .iter()
-            .any(|rule| selector_matches(selector, rule.code))
-        {
+        if !RULES.iter().any(|rule| selector_matches(selector, rule)) {
             return Err(ConfigError::new(format!(
                 "unknown rule selector `{selector}` in {field}"
             )));
@@ -418,14 +446,8 @@ fn validate_selectors(field: &str, selectors: &[String]) -> Result<(), ConfigErr
     Ok(())
 }
 
-fn selector_matches(selector: &str, code: &str) -> bool {
-    selector == "ALL"
-        || selector == code
-        || (selector == rule_family(code) && code.starts_with(selector))
-}
-
-fn rule_family(code: &str) -> &str {
-    code.trim_end_matches(|character: char| character.is_ascii_digit())
+fn selector_matches(selector: &str, rule: &crate::rules::RuleSummary) -> bool {
+    selector == "ALL" || selector == rule.code || selector == rule.family.selector
 }
 
 fn validate_relative_path(field: &str, value: &str) -> Result<(), ConfigError> {
@@ -463,10 +485,14 @@ pub fn normalize_path(path: &Path) -> String {
 fn format_strings(values: &[String]) -> String {
     let values = values
         .iter()
-        .map(|value| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
+        .map(|value| format_string(value))
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{values}]")
+}
+
+fn format_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 #[cfg(test)]

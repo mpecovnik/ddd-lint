@@ -1,12 +1,13 @@
 pub mod cli;
 pub mod rules;
 
-#[allow(dead_code)] // Resolved policy is consumed by rule execution in MAT-12 and MAT-15.
 pub(crate) mod config;
+pub mod diagnostics;
 #[allow(dead_code)] // Semantic graph queries are consumed by rules in MAT-7 and MAT-9.
 pub(crate) mod graph;
 #[allow(dead_code)] // Project metadata is consumed by graph indexing in MAT-15.
 pub(crate) mod project;
+pub(crate) mod suppression;
 
 #[allow(dead_code)] // Parser foundation is consumed by the project graph in MAT-15.
 pub(crate) mod python;
@@ -19,7 +20,7 @@ use std::fmt::{self, Display, Formatter};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, OutputFormat};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExitStatus {
@@ -77,7 +78,10 @@ fn execute_from(
 ) -> Result<ExitStatus, CliError> {
     let config_path = cli.config.as_deref();
     match cli.command {
-        Command::Check { paths } => check(paths, current_dir, config_path, output),
+        Command::Check {
+            paths,
+            output_format,
+        } => check(paths, output_format, current_dir, config_path, output),
         Command::Rule { code } => explain_rule(code, output),
         Command::Config => show_config(output, current_dir, config_path),
     }
@@ -85,6 +89,7 @@ fn execute_from(
 
 fn check(
     paths: Vec<PathBuf>,
+    output_format: OutputFormat,
     current_dir: &Path,
     config_path: Option<&Path>,
     output: &mut dyn Write,
@@ -109,16 +114,50 @@ fn check(
         .map_err(|error| CliError::Configuration(error.to_string()))?;
     let build = graph::ProjectGraph::build(&project, &discovered)
         .map_err(|error| CliError::Configuration(error.to_string()))?;
-    if !build.syntax_errors.is_empty() {
-        for error in &build.syntax_errors {
-            writeln!(output, "{error}").map_err(|_| CliError::WriteOutput)?;
+    let mut sources = diagnostics::SourceMap::default();
+    for file in build.files() {
+        if let Some(source) = &file.source {
+            sources.insert(source.clone());
         }
+    }
+    let (exceptions, directive_errors) =
+        suppression::DesignExceptions::parse(build.files(), &project.config().per_file_ignores);
+    if !build.syntax_errors().is_empty() || !directive_errors.is_empty() {
+        match output_format {
+            OutputFormat::Human => diagnostics::write_source_findings_human(
+                output,
+                project.root(),
+                &sources,
+                &directive_errors,
+                build.syntax_errors(),
+            ),
+            OutputFormat::Json => diagnostics::write_source_findings_json(
+                output,
+                project.root(),
+                &sources,
+                &directive_errors,
+                build.syntax_errors(),
+            ),
+        }
+        .map_err(|_| CliError::WriteOutput)?;
         return Ok(ExitStatus::Violations);
     }
 
-    // Rule execution is introduced by later tasks. The complete project graph is
-    // still built so syntax and module-identity failures remain unconditional.
-    Ok(ExitStatus::Success)
+    let _graph = build
+        .into_rule_graph()
+        .expect("syntax errors were checked before rule execution");
+
+    // MAT-7, MAT-9, and MAT-11 add concrete rule findings to this shared pipeline.
+    // Keeping execution below the syntax/directive guard prevents partial analysis.
+    let diagnostics = exceptions.apply(Vec::new(), project.root());
+    match output_format {
+        OutputFormat::Human => diagnostics.write_human(output, project.root(), &sources),
+        OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),
+    }
+    .map_err(|_| CliError::WriteOutput)?;
+    Ok(ExitStatus::from_diagnostic_count(
+        diagnostics.as_slice().len(),
+    ))
 }
 
 fn ensure_path_exists(path: &Path) -> Result<(), CliError> {
@@ -132,6 +171,21 @@ fn ensure_path_exists(path: &Path) -> Result<(), CliError> {
 fn explain_rule(code: rules::RuleCode, output: &mut dyn Write) -> Result<ExitStatus, CliError> {
     let rule = code.summary();
     writeln!(output, "{}: {}", rule.code, rule.name).map_err(|_| CliError::WriteOutput)?;
+    writeln!(
+        output,
+        "Family: {} ({})",
+        rule.family.name, rule.family.selector
+    )
+    .map_err(|_| CliError::WriteOutput)?;
+    if rule.configuration.is_empty() {
+        writeln!(output, "Configuration: none").map_err(|_| CliError::WriteOutput)?;
+    } else {
+        writeln!(output, "Configuration:").map_err(|_| CliError::WriteOutput)?;
+        for field in rule.configuration {
+            writeln!(output, "  {} = {}", field.name, field.default)
+                .map_err(|_| CliError::WriteOutput)?;
+        }
+    }
     writeln!(output, "Documentation: {}", rule.documentation).map_err(|_| CliError::WriteOutput)?;
     Ok(ExitStatus::Success)
 }
@@ -154,7 +208,7 @@ fn show_config(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::cli::{Cli, Command};
+    use crate::cli::{Cli, Command, OutputFormat};
 
     use super::{CliError, ExitStatus, execute};
 
@@ -170,6 +224,7 @@ mod tests {
             verbose: 0,
             config: None,
             command: Command::Check {
+                output_format: OutputFormat::Human,
                 paths: vec![PathBuf::from("path-that-cannot-exist")],
             },
         };
@@ -198,7 +253,7 @@ mod tests {
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(
             output,
-            b"select = []\nignore = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n"
+            b"select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n"
         );
     }
 }

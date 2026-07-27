@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use crate::rules::RuleCode;
 
@@ -27,6 +27,10 @@ pub struct Cli {
 pub enum Command {
     /// Check Python files and directories.
     Check {
+        /// Diagnostic output format.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+        output_format: OutputFormat,
+
         /// Files or directories to check. Defaults to the current directory.
         paths: Vec<PathBuf>,
     },
@@ -39,4 +43,11 @@ pub enum Command {
 
     /// Show the current configuration.
     Config,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Human,
+    Json,
 }

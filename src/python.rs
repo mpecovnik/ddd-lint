@@ -77,6 +77,10 @@ pub struct ByteRange {
 }
 
 impl ByteRange {
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
     pub const fn start(self) -> usize {
         self.start
     }
@@ -461,11 +465,6 @@ pub fn parse_module(
         )
         .collect::<Vec<_>>();
 
-    if !errors.is_empty() {
-        errors.sort_by_key(|error| (error.range.start, error.range.end));
-        return Err(ParseErrors { source, errors });
-    }
-
     let comments = parsed
         .tokens()
         .iter()
@@ -478,12 +477,21 @@ pub fn parse_module(
             }
         })
         .collect();
-
     let module = parsed
         .try_into_module()
         .expect("module parse options must produce a module")
         .into_syntax();
     let nodes = NodeCollector::collect(&module);
+
+    if !errors.is_empty() {
+        errors.sort_by_key(|error| (error.range.start, error.range.end));
+        return Err(ParseErrors {
+            source: Box::new(source),
+            comments,
+            nodes,
+            errors,
+        });
+    }
     let facts = extract_module_facts(&module, source.path(), source.text(), target_version);
 
     Ok(ParsedModule {
@@ -925,7 +933,9 @@ pub struct SyntaxError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParseErrors {
-    source: SourceFile,
+    source: Box<SourceFile>,
+    comments: Vec<Comment>,
+    nodes: Vec<SyntaxNode>,
     errors: Vec<SyntaxError>,
 }
 
@@ -936,6 +946,14 @@ impl ParseErrors {
 
     pub fn errors(&self) -> &[SyntaxError] {
         &self.errors
+    }
+
+    pub fn comments(&self) -> &[Comment] {
+        &self.comments
+    }
+
+    pub fn nodes(&self) -> &[SyntaxNode] {
+        &self.nodes
     }
 }
 
