@@ -19,6 +19,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+ruff_python_ast = "=0.0.6"
+ruff_python_parser = "=0.0.6"
+ruff_text_size = "=0.0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 
