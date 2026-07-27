@@ -71,20 +71,33 @@ impl Error for CliError {}
 
 pub fn execute(cli: Cli, output: &mut dyn Write) -> Result<ExitStatus, CliError> {
     let current_dir = std::env::current_dir().map_err(|_| CliError::CurrentDirectory)?;
-    execute_from(cli, output, &current_dir)
+    execute_from(cli, output, &current_dir, false)
+}
+
+pub fn execute_styled(cli: Cli, output: &mut dyn Write) -> Result<ExitStatus, CliError> {
+    let current_dir = std::env::current_dir().map_err(|_| CliError::CurrentDirectory)?;
+    execute_from(cli, output, &current_dir, true)
 }
 
 fn execute_from(
     cli: Cli,
     output: &mut dyn Write,
     current_dir: &Path,
+    styled: bool,
 ) -> Result<ExitStatus, CliError> {
     let config_path = cli.config.as_deref();
     match cli.command {
         Command::Check {
             paths,
             output_format,
-        } => check(paths, output_format, current_dir, config_path, output),
+        } => check(
+            paths,
+            output_format,
+            current_dir,
+            config_path,
+            output,
+            styled,
+        ),
         Command::Rule { code } => explain_rule(code, output),
         Command::Config => show_config(output, current_dir, config_path),
     }
@@ -96,6 +109,7 @@ fn check(
     current_dir: &Path,
     config_path: Option<&Path>,
     output: &mut dyn Write,
+    styled: bool,
 ) -> Result<ExitStatus, CliError> {
     if paths.is_empty() {
         ensure_path_exists(current_dir)?;
@@ -181,7 +195,9 @@ fn check(
         project.config_path(),
     );
     match output_format {
-        OutputFormat::Human => diagnostics.write_human(output, project.root(), &sources),
+        OutputFormat::Human => {
+            diagnostics.write_human_styled(output, project.root(), &sources, styled)
+        }
         OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),
     }
     .map_err(|_| CliError::WriteOutput)?;

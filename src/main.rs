@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -11,7 +11,13 @@ fn main() -> ExitCode {
 
     let stdout = io::stdout();
     let mut output = stdout.lock();
-    match ddd_lint::execute(cli, &mut output) {
+    let styled = stdout.is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let result = if styled {
+        ddd_lint::execute_styled(cli, &mut output)
+    } else {
+        ddd_lint::execute(cli, &mut output)
+    };
+    match result {
         Ok(status) => ExitCode::from(status.code()),
         Err(error) => {
             let _ = writeln!(io::stderr().lock(), "error: {error}");

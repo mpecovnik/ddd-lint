@@ -417,6 +417,51 @@ fn ct001_and_ct002_report_missing_members_and_catch_all_independently() {
 }
 
 #[test]
+fn ct002_allows_assert_never_capture_for_exhaustiveness() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "from typing import assert_never\nclass Epic: pass\nclass Assigned: pass\nWorkstream = Epic | Assigned\ndef key(workstream: Workstream) -> str:\n    match workstream:\n        case Epic(): return \"epic\"\n        case Assigned(): return \"assigned\"\n        case unexpected:\n            assert_never(unexpected)\n",
+    );
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(output.status.success(), "{}", stdout(&output));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn ct002_resolves_assert_never_and_rejects_guarded_or_local_impostors() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT002\"]\n",
+    );
+    write(
+        &directory.path().join("model.py"),
+        "import typing\nfrom typing_extensions import assert_never as never\nclass A: pass\nclass B: pass\nValue = A | B\ndef qualified(value: Value):\n    match value:\n        case A(): pass\n        case B(): pass\n        case unexpected: typing.assert_never(unexpected)\ndef aliased(value: Value):\n    match value:\n        case A(): pass\n        case B(): pass\n        case unexpected: never(unexpected)\ndef guarded(value: Value):\n    match value:\n        case unexpected if ready: typing.assert_never(unexpected)\ndef impostor(value: Value):\n    def assert_never(item): pass\n    match value:\n        case unexpected: assert_never(unexpected)\n",
+    );
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stdout(&output).matches("CT002").count(),
+        2,
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn ct001_handles_or_as_guards_literals_enums_and_none() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(

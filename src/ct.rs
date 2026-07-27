@@ -108,7 +108,17 @@ fn analyze_match(
 
     if selected.contains("CT002") {
         for case in &site.cases {
-            if let PatternFact::CatchAll { range } = case.pattern {
+            if let PatternFact::CatchAll { range } = case.pattern
+                && (case.guarded
+                    || case.exhaustive_sink.as_ref().is_none_or(|sink| {
+                        !matches!(
+                            graph
+                                .site_symbol(module, site.scope.as_deref(), sink)
+                                .as_deref(),
+                            Some("typing.assert_never" | "typing_extensions.assert_never")
+                        )
+                    }))
+            {
                 diagnostics.push(Diagnostic::new(
                     &site.path,
                     range,

@@ -362,6 +362,7 @@ pub struct MatchFact {
 pub struct MatchCaseFact {
     pub pattern: PatternFact,
     pub guarded: bool,
+    pub exhaustive_sink: Option<SemanticExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1659,6 +1660,11 @@ impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
                         .map(|case| MatchCaseFact {
                             pattern: pattern_fact(&case.pattern, self.source, self.target_version),
                             guarded: case.guard.is_some(),
+                            exhaustive_sink: case_exhaustive_sink(
+                                case,
+                                self.source,
+                                self.target_version,
+                            ),
                         })
                         .collect(),
                 }));
@@ -1697,6 +1703,33 @@ impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
             _ => {}
         }
     }
+}
+
+fn case_exhaustive_sink(
+    case: &ruff_python_ast::MatchCase,
+    source: &str,
+    target_version: PythonVersion,
+) -> Option<SemanticExpr> {
+    let capture = catch_all_capture(&case.pattern)?;
+    let [Stmt::Expr(statement)] = case.body.as_slice() else {
+        return None;
+    };
+    let Expr::Call(call) = statement.value.as_ref() else {
+        return None;
+    };
+    (call.arguments.keywords.is_empty()
+        && matches!(call.arguments.args.as_ref(), [Expr::Name(name)] if name.id.as_str() == capture))
+    .then(|| semantic_expr(&call.func, source, target_version, false))
+}
+
+fn catch_all_capture(pattern: &Pattern) -> Option<&str> {
+    let Pattern::MatchAs(pattern) = pattern else {
+        return None;
+    };
+    if pattern.pattern.is_some() {
+        return None;
+    }
+    pattern.name.as_ref().map(|name| name.id.as_str())
 }
 
 fn collect_direct_tests(

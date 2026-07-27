@@ -16,6 +16,20 @@ A catch-all makes a match total today but hides future members from ordinary con
 
 DDD Lint provides `CT001` as its exhaustiveness check, so an `assert_never` wildcard pattern is unnecessary when both rules are selected.
 
+A named capture used only as the argument to `assert_never` is allowed. This preserves projects that deliberately delegate exhaustiveness checking to a type checker:
+
+```python
+match status:
+    case Status.OPEN:
+        open_order()
+    case Status.CLOSED:
+        close_order()
+    case unexpected:
+        assert_never(unexpected)
+```
+
+The case body must consist only of `assert_never` called with that same capture. Ordinary captures and wildcards still trigger `CT002`.
+
 ## Example
 
 Problematic:

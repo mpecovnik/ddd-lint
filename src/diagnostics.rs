@@ -78,6 +78,19 @@ impl DiagnosticSet {
         root: &Path,
         sources: &SourceMap,
     ) -> io::Result<()> {
+        self.write_human_styled(output, root, sources, false)
+    }
+
+    pub fn write_human_styled(
+        &self,
+        output: &mut dyn Write,
+        root: &Path,
+        sources: &SourceMap,
+        styled: bool,
+    ) -> io::Result<()> {
+        if styled {
+            return self.write_grouped_color(output, root, sources);
+        }
         for diagnostic in &self.diagnostics {
             let range = sources.range(&diagnostic.path, diagnostic.range);
             let rule = diagnostic.rule.summary();
@@ -95,6 +108,44 @@ impl DiagnosticSet {
                 diagnostic.remediation,
                 rule.documentation
             )?;
+        }
+        Ok(())
+    }
+
+    fn write_grouped_color(
+        &self,
+        output: &mut dyn Write,
+        root: &Path,
+        sources: &SourceMap,
+    ) -> io::Result<()> {
+        let mut previous: Option<String> = None;
+        for diagnostic in &self.diagnostics {
+            let path = display_path(&diagnostic.path, root);
+            if previous.as_deref() != Some(path.as_str()) {
+                if previous.is_some() {
+                    writeln!(output)?;
+                }
+                writeln!(output, "\x1b[1;36m{path}\x1b[0m")?;
+                previous = Some(path);
+            }
+            let range = sources.range(&diagnostic.path, diagnostic.range);
+            let rule = diagnostic.rule.summary();
+            writeln!(
+                output,
+                "  {}:{}-{}:{}  \x1b[1;33m{}\x1b[0m {}",
+                range.start.line,
+                range.start.column,
+                range.end.line,
+                range.end.column,
+                rule.code,
+                diagnostic.message,
+            )?;
+            writeln!(
+                output,
+                "    \x1b[32mhelp\x1b[0m: {}",
+                diagnostic.remediation
+            )?;
+            writeln!(output, "    \x1b[2mdocs: {}\x1b[0m", rule.documentation)?;
         }
         Ok(())
     }
@@ -356,5 +407,24 @@ mod tests {
             String::from_utf8(json).expect("UTF-8"),
             "[\n  {\n    \"code\": \"DM001\",\n    \"name\": \"nullable-model-field\",\n    \"family\": \"Domain model\",\n    \"path\": \"model.py\",\n    \"range\": {\n      \"start\": {\n        \"line\": 1,\n        \"column\": 1\n      },\n      \"end\": {\n        \"line\": 1,\n        \"column\": 2\n      }\n    },\n    \"message\": \"observed condition\",\n    \"remediation\": \"model alternatives explicitly\",\n    \"documentation\": \"https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md\"\n  }\n]\n"
         );
+    }
+
+    #[test]
+    fn styled_human_output_groups_diagnostics_by_file() {
+        let source = SourceFile::new("model.py", "first = 1\nsecond = 2\n");
+        let mut sources = SourceMap::default();
+        sources.insert(source);
+        let diagnostics = DiagnosticSet::new(vec![
+            diagnostic("model.py", 0, "DM001"),
+            diagnostic("model.py", 10, "DM003"),
+        ]);
+        let mut output = Vec::new();
+        diagnostics
+            .write_human_styled(&mut output, std::path::Path::new("."), &sources, true)
+            .expect("styled output");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert_eq!(output.matches("\x1b[1;36mmodel.py\x1b[0m").count(), 1);
+        assert!(output.contains("\x1b[1;33mDM001\x1b[0m"));
+        assert!(output.contains("\x1b[1;33mDM003\x1b[0m"));
     }
 }
