@@ -161,6 +161,7 @@ V1 targets Python 3.10+ and Pydantic 2. Pydantic dataclasses, `RootModel`, noteb
 - [ADR 0001: Standalone CLI with Ruff parser](docs/adr/0001-standalone-cli-with-ruff-parser.md)
 - [ADR 0002: Declared project graph](docs/adr/0002-declared-project-graph.md)
 - [ADR 0003: Reasoned design exceptions](docs/adr/0003-reasoned-design-exceptions.md)
+- [Ruff dependency upgrade procedure](docs/development/ruff-dependency-upgrades.md)
 
 ## Development Prerequisites
 

@@ -13,7 +13,7 @@ Parser candidates were `ruff_python_parser`, `rustpython-parser`, and a vendored
 
 Build `ddd-lint` as a standalone Rust CLI and distribute it primarily through PyPI binary wheels.
 
-Use exact-pinned `ruff_python_parser` and `ruff_python_ast` crate versions behind a project-owned syntax adapter. No rule or analyzer module may depend directly on Ruff AST types outside that adapter boundary.
+Use exact-pinned `ruff_python_parser`, `ruff_python_ast`, and supporting Ruff source-range crate versions behind a project-owned syntax adapter. No rule or analyzer module may depend directly on Ruff types outside that adapter boundary.
 
 Do not fork Ruff, vendor its parser, or design v1 around upstream acceptance.
 
