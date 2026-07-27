@@ -1,0 +1,7 @@
+exit: 1
+stdout:
+broken.py:1:12-1:13: syntax-error: invalid Python syntax: Expected a parameter or the end of the parameter list
+broken.py:2:1-2:1: syntax-error: invalid Python syntax: unexpected EOF while parsing
+broken.pyi:2:1-2:1: syntax-error: invalid Python syntax: unexpected EOF while parsing
+invalid_directive.py:1:12-1:67: invalid-source-directive: ddd-lint directives cannot suppress SUP001
+stderr:

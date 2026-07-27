@@ -1,0 +1,5 @@
+exit: 1
+stdout:
+src/consumer.py:5:5-7:28: CT001 non-exhaustive-match: match omits closed members: contracts.Delivered; help: add an unguarded explicit case for every closed member; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md
+src/consumer.py:12:5-14:31: CT001 non-exhaustive-match: match omits closed members: contracts.Queued; help: add an unguarded explicit case for every closed member; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md
+stderr:

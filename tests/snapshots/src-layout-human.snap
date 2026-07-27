@@ -1,0 +1,4 @@
+exit: 1
+stdout:
+src/shop/order.py:5:5-5:36: DM001 nullable-model-field: model field `cancellation_reason` explicitly admits None; help: represent absence as an explicit model variant or document a design exception; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md
+stderr:

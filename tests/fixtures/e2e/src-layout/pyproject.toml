@@ -1,0 +1,7 @@
+[project]
+name = "ddd-lint-src-fixture"
+version = "0.0.0"
+
+[tool.ddd-lint]
+select = ["DM001"]
+src = ["src"]

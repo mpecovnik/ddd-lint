@@ -1,0 +1,24 @@
+exit: 1
+stdout:
+[
+  {
+    "code": "DM001",
+    "name": "nullable-model-field",
+    "family": "Domain model",
+    "path": "src/shop/order.py",
+    "range": {
+      "start": {
+        "line": 5,
+        "column": 5
+      },
+      "end": {
+        "line": 5,
+        "column": 36
+      }
+    },
+    "message": "model field `cancellation_reason` explicitly admits None",
+    "remediation": "represent absence as an explicit model variant or document a design exception",
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md"
+  }
+]
+stderr:

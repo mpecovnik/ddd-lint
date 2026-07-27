@@ -1,0 +1,2 @@
+[tool.ddd-lint
+select = ["ALL"]

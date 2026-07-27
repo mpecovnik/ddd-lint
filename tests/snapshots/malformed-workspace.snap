@@ -1,0 +1,4 @@
+exit: 2
+stdout:
+stderr:
+error: invalid configuration in <FIXTURE>/pyproject.toml: invalid glob `packages/[`: error parsing glob 'packages/[': unclosed character class; missing ']'

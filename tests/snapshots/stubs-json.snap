@@ -1,0 +1,43 @@
+exit: 1
+stdout:
+[
+  {
+    "code": "CT001",
+    "name": "non-exhaustive-match",
+    "family": "Closed type",
+    "path": "src/consumer.py",
+    "range": {
+      "start": {
+        "line": 5,
+        "column": 5
+      },
+      "end": {
+        "line": 7,
+        "column": 28
+      }
+    },
+    "message": "match omits closed members: contracts.Delivered",
+    "remediation": "add an unguarded explicit case for every closed member",
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+  },
+  {
+    "code": "CT001",
+    "name": "non-exhaustive-match",
+    "family": "Closed type",
+    "path": "src/consumer.py",
+    "range": {
+      "start": {
+        "line": 12,
+        "column": 5
+      },
+      "end": {
+        "line": 14,
+        "column": 31
+      }
+    },
+    "message": "match omits closed members: contracts.Queued",
+    "remediation": "add an unguarded explicit case for every closed member",
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+  }
+]
+stderr:

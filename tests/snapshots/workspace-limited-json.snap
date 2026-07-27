@@ -1,0 +1,24 @@
+exit: 1
+stdout:
+[
+  {
+    "code": "CT001",
+    "name": "non-exhaustive-match",
+    "family": "Closed type",
+    "path": "packages/app/src/app/handlers.py",
+    "range": {
+      "start": {
+        "line": 5,
+        "column": 5
+      },
+      "end": {
+        "line": 7,
+        "column": 28
+      }
+    },
+    "message": "match omits closed members: domain.events.Closed",
+    "remediation": "add an unguarded explicit case for every closed member",
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+  }
+]
+stderr:

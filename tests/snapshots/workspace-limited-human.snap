@@ -1,0 +1,4 @@
+exit: 1
+stdout:
+packages/app/src/app/handlers.py:5:5-7:28: CT001 non-exhaustive-match: match omits closed members: domain.events.Closed; help: add an unguarded explicit case for every closed member; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md
+stderr:

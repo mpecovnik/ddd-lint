@@ -1,0 +1,9 @@
+exit: 2
+stdout:
+stderr:
+error: failed to parse <FIXTURE>/pyproject.toml: TOML parse error at line 1, column 15
+  |
+1 | [tool.ddd-lint
+  |               ^
+unclosed table, expected `]`
+

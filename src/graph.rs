@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use num_bigint::BigInt;
 use num_traits::FromPrimitive;
+use rayon::prelude::*;
 
 use crate::config::TargetVersion;
 use crate::project::{DiscoveredFiles, Project};
@@ -215,26 +216,38 @@ impl ProjectGraph {
         }
 
         let target_version = python_version(project.config().target_version);
+        let parsed = supporting
+            .par_iter()
+            .map(|path| {
+                let source = fs::read_to_string(path).map_err(|source| GraphError::ReadSource {
+                    path: path.clone(),
+                    source,
+                })?;
+                Ok::<_, GraphError>((
+                    path.clone(),
+                    SourceKind::from_path(path),
+                    derived.get(path).cloned().flatten(),
+                    parse_module(path, source, target_version),
+                ))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
         let mut modules = BTreeMap::<String, RawModule>::new();
         let mut files = Vec::new();
         let mut syntax_errors = Vec::new();
-        for path in &supporting {
-            let source = fs::read_to_string(path).map_err(|source| GraphError::ReadSource {
-                path: path.clone(),
-                source,
-            })?;
-            let source_kind = SourceKind::from_path(path);
-            let module_identity = derived.get(path).cloned().flatten();
+        for (path, source_kind, module_identity, parsed) in parsed {
             files.push(GraphFile {
                 path: path.clone(),
                 module: module_identity.as_ref().map(|(name, _)| name.clone()),
                 source_kind,
-                diagnostic: source_kind == SourceKind::Python && diagnostic_paths.contains(path),
+                diagnostic: source_kind == SourceKind::Python && diagnostic_paths.contains(&path),
                 source: None,
                 comments: Vec::new(),
                 nodes: Vec::new(),
             });
-            match parse_module(path, source, target_version) {
+            match parsed {
                 Ok(parsed) => {
                     let file = files.last_mut().expect("graph file was inserted");
                     file.source = Some(parsed.source().clone());
