@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn ddd_lint() -> Command {
@@ -18,6 +19,12 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).expect("stderr should be UTF-8")
+}
+
+fn write(path: &Path, source: &str) {
+    fs::create_dir_all(path.parent().expect("fixture path should have a parent"))
+        .expect("fixture directory should be created");
+    fs::write(path, source).expect("fixture should be written");
 }
 
 #[test]
@@ -93,4 +100,53 @@ fn config_reports_zero_selected_rules() {
         stdout(&output),
         "select = []\nignore = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n"
     );
+}
+
+#[test]
+fn explicit_config_overrides_ancestor_discovery() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let nested = directory.path().join("nested");
+    fs::create_dir_all(&nested).expect("nested directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"DM001\"]\n",
+    );
+    let explicit = directory.path().join("policy.toml");
+    write(
+        &explicit,
+        "[tool.ddd-lint]\nselect = [\"DI001\"]\ntarget-version = \"py315\"\n",
+    );
+
+    let output = ddd_lint()
+        .current_dir(nested)
+        .arg("config")
+        .arg("--config")
+        .arg(explicit)
+        .output()
+        .expect("ddd-lint should run");
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let output = stdout(&output);
+    assert!(output.contains("select = [\"DI001\"]"), "{output}");
+    assert!(output.contains("target-version = \"py315\""), "{output}");
+}
+
+#[test]
+fn malformed_explicit_config_exits_two_with_context() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let config = directory.path().join("pyproject.toml");
+    write(&config, "[tool.ddd-lint\nselect = []\n");
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("--config")
+        .arg(&config)
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(2));
+    let error = stderr(&output);
+    assert!(error.contains("failed to parse"), "{error}");
+    assert!(error.contains("pyproject.toml"), "{error}");
 }

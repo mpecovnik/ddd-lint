@@ -1,6 +1,11 @@
 pub mod cli;
 pub mod rules;
 
+#[allow(dead_code)] // Resolved policy is consumed by rule execution in MAT-12 and MAT-15.
+pub(crate) mod config;
+#[allow(dead_code)] // Project metadata is consumed by graph indexing in MAT-15.
+pub(crate) mod project;
+
 #[allow(dead_code)] // Parser foundation is consumed by the project graph in MAT-15.
 pub(crate) mod python;
 
@@ -39,6 +44,8 @@ impl ExitStatus {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
+    CurrentDirectory,
+    Configuration(String),
     MissingPath(PathBuf),
     WriteOutput,
 }
@@ -46,6 +53,8 @@ pub enum CliError {
 impl Display for CliError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CurrentDirectory => formatter.write_str("failed to resolve current directory"),
+            Self::Configuration(message) => formatter.write_str(message),
             Self::MissingPath(path) => write!(formatter, "path does not exist: {}", path.display()),
             Self::WriteOutput => formatter.write_str("failed to write command output"),
         }
@@ -55,24 +64,49 @@ impl Display for CliError {
 impl Error for CliError {}
 
 pub fn execute(cli: Cli, output: &mut dyn Write) -> Result<ExitStatus, CliError> {
+    let current_dir = std::env::current_dir().map_err(|_| CliError::CurrentDirectory)?;
+    execute_from(cli, output, &current_dir)
+}
+
+fn execute_from(
+    cli: Cli,
+    output: &mut dyn Write,
+    current_dir: &Path,
+) -> Result<ExitStatus, CliError> {
+    let config_path = cli.config.as_deref();
     match cli.command {
-        Command::Check { paths } => check(paths),
+        Command::Check { paths } => check(paths, current_dir, config_path),
         Command::Rule { code } => explain_rule(code, output),
-        Command::Config => show_config(output),
+        Command::Config => show_config(output, current_dir, config_path),
     }
 }
 
-fn check(paths: Vec<PathBuf>) -> Result<ExitStatus, CliError> {
+fn check(
+    paths: Vec<PathBuf>,
+    current_dir: &Path,
+    config_path: Option<&Path>,
+) -> Result<ExitStatus, CliError> {
     if paths.is_empty() {
-        ensure_path_exists(Path::new("."))?;
+        ensure_path_exists(current_dir)?;
     } else {
-        for path in paths {
+        for path in &paths {
+            let path = if path.is_absolute() {
+                path.clone()
+            } else {
+                current_dir.join(path)
+            };
             ensure_path_exists(&path)?;
         }
     }
 
-    // V1 enables no rules unless configuration selects them. Configuration and
-    // analysis are introduced by later implementation tasks.
+    let project = project::Project::resolve(current_dir, config_path)
+        .map_err(|error| CliError::Configuration(error.to_string()))?;
+    project
+        .discover_files(current_dir, &paths)
+        .map_err(|error| CliError::Configuration(error.to_string()))?;
+
+    // Rule execution is introduced by later tasks. Discovery still runs here so
+    // invalid policy and project layouts fail before analysis.
     Ok(ExitStatus::Success)
 }
 
@@ -91,10 +125,17 @@ fn explain_rule(code: rules::RuleCode, output: &mut dyn Write) -> Result<ExitSta
     Ok(ExitStatus::Success)
 }
 
-fn show_config(output: &mut dyn Write) -> Result<ExitStatus, CliError> {
-    writeln!(output, "# Configuration discovery is not implemented yet.")
+fn show_config(
+    output: &mut dyn Write,
+    current_dir: &Path,
+    config_path: Option<&Path>,
+) -> Result<ExitStatus, CliError> {
+    let project = project::Project::resolve(current_dir, config_path)
+        .map_err(|error| CliError::Configuration(error.to_string()))?;
+    project
+        .config()
+        .write(output)
         .map_err(|_| CliError::WriteOutput)?;
-    writeln!(output, "select = []").map_err(|_| CliError::WriteOutput)?;
     Ok(ExitStatus::Success)
 }
 
@@ -116,6 +157,7 @@ mod tests {
     fn missing_check_path_is_an_error() {
         let cli = Cli {
             verbose: 0,
+            config: None,
             command: Command::Check {
                 paths: vec![PathBuf::from("path-that-cannot-exist")],
             },
@@ -123,9 +165,11 @@ mod tests {
 
         assert_eq!(
             execute(cli, &mut Vec::new()),
-            Err(CliError::MissingPath(PathBuf::from(
-                "path-that-cannot-exist"
-            )))
+            Err(CliError::MissingPath(
+                std::env::current_dir()
+                    .expect("current directory")
+                    .join("path-that-cannot-exist")
+            ))
         );
     }
 
@@ -133,6 +177,7 @@ mod tests {
     fn config_shows_no_selected_rules() {
         let cli = Cli {
             verbose: 0,
+            config: None,
             command: Command::Config,
         };
         let mut output = Vec::new();
@@ -142,7 +187,7 @@ mod tests {
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(
             output,
-            b"# Configuration discovery is not implemented yet.\nselect = []\n"
+            b"select = []\nignore = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n"
         );
     }
 }
