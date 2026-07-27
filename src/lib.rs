@@ -1,6 +1,12 @@
 pub mod cli;
 pub mod rules;
 
+#[allow(dead_code)] // Parser foundation is consumed by the project graph in MAT-15.
+pub(crate) mod python;
+
+#[cfg(test)]
+mod python_tests;
+
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Write;
