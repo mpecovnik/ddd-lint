@@ -4,7 +4,7 @@ DDD Lint is a planned Rust-based Python linter for opinionated domain-driven des
 
 It identifies syntax and type structures that deserve domain-model review without claiming to prove that a model is wrong. Rules are individually selectable, grouped into families, and suppressible through narrow design exceptions that require written reasons.
 
-> Status: v1 behavior and architecture are specified. The CLI is not implemented or published yet.
+> Status: v1 behavior and architecture are specified, and the CLI/package scaffold is implemented. Rule analysis is not implemented and the package is not published yet.
 
 ## Motivation
 
@@ -164,7 +164,7 @@ V1 targets Python 3.10+ and Pydantic 2. Pydantic dataclasses, `RootModel`, noteb
 
 ## Development Prerequisites
 
-Implementation will require Rust 1.95 or newer, Cargo, Python 3.10 or newer, and maturin. The parser dependency is exact-pinned and isolated behind an internal adapter because Ruff component crates expose unstable `0.0.x` APIs.
+Building locally requires Rust 1.95 or newer, Cargo, Python 3.10 or newer, and maturin. The parser dependency will be exact-pinned and isolated behind an internal adapter because Ruff component crates expose unstable `0.0.x` APIs.
 
 ## License
 
