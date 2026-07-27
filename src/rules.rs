@@ -68,6 +68,10 @@ impl RuleCode {
     pub const fn summary(self) -> &'static RuleSummary {
         self.0
     }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0.code
+    }
 }
 
 impl Display for RuleCode {

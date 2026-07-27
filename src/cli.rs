@@ -15,6 +15,10 @@ pub struct Cli {
     #[arg(short, long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
 
+    /// Use this pyproject.toml instead of searching parent directories.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }

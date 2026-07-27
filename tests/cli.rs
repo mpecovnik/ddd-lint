@@ -91,6 +91,6 @@ fn config_reports_zero_selected_rules() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "# Configuration discovery is not implemented yet.\nselect = []\n"
+        "select = []\nignore = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n"
     );
 }
