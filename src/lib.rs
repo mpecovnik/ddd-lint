@@ -3,6 +3,8 @@ pub mod rules;
 
 #[allow(dead_code)] // Resolved policy is consumed by rule execution in MAT-12 and MAT-15.
 pub(crate) mod config;
+#[allow(dead_code)] // Semantic graph queries are consumed by rules in MAT-7 and MAT-9.
+pub(crate) mod graph;
 #[allow(dead_code)] // Project metadata is consumed by graph indexing in MAT-15.
 pub(crate) mod project;
 
@@ -75,7 +77,7 @@ fn execute_from(
 ) -> Result<ExitStatus, CliError> {
     let config_path = cli.config.as_deref();
     match cli.command {
-        Command::Check { paths } => check(paths, current_dir, config_path),
+        Command::Check { paths } => check(paths, current_dir, config_path, output),
         Command::Rule { code } => explain_rule(code, output),
         Command::Config => show_config(output, current_dir, config_path),
     }
@@ -85,6 +87,7 @@ fn check(
     paths: Vec<PathBuf>,
     current_dir: &Path,
     config_path: Option<&Path>,
+    output: &mut dyn Write,
 ) -> Result<ExitStatus, CliError> {
     if paths.is_empty() {
         ensure_path_exists(current_dir)?;
@@ -101,12 +104,20 @@ fn check(
 
     let project = project::Project::resolve(current_dir, config_path)
         .map_err(|error| CliError::Configuration(error.to_string()))?;
-    project
+    let discovered = project
         .discover_files(current_dir, &paths)
         .map_err(|error| CliError::Configuration(error.to_string()))?;
+    let build = graph::ProjectGraph::build(&project, &discovered)
+        .map_err(|error| CliError::Configuration(error.to_string()))?;
+    if !build.syntax_errors.is_empty() {
+        for error in &build.syntax_errors {
+            writeln!(output, "{error}").map_err(|_| CliError::WriteOutput)?;
+        }
+        return Ok(ExitStatus::Violations);
+    }
 
-    // Rule execution is introduced by later tasks. Discovery still runs here so
-    // invalid policy and project layouts fail before analysis.
+    // Rule execution is introduced by later tasks. The complete project graph is
+    // still built so syntax and module-identity failures remain unconditional.
     Ok(ExitStatus::Success)
 }
 

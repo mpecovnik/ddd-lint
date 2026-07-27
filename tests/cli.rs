@@ -50,7 +50,12 @@ fn every_subcommand_help_succeeds() {
 
 #[test]
 fn check_defaults_to_current_directory_and_no_rules() {
-    let output = run(&["check"]);
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
 
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stdout.is_empty());
@@ -149,4 +154,28 @@ fn malformed_explicit_config_exits_two_with_context() {
     let error = stderr(&output);
     assert!(error.contains("failed to parse"), "{error}");
     assert!(error.contains("pyproject.toml"), "{error}");
+}
+
+#[test]
+fn syntax_error_exits_one_even_with_no_selected_rules() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\n",
+    );
+    write(&directory.path().join("broken.py"), "def broken(:\n");
+
+    let output = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    let diagnostic = stdout(&output);
+    assert!(
+        diagnostic.contains("broken.py:1:12: invalid Python syntax"),
+        "{diagnostic}"
+    );
+    assert!(output.stderr.is_empty());
 }

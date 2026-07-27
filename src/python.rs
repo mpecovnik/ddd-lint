@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_ast::visitor::source_order::SourceOrderVisitor;
 use ruff_python_ast::{
-    AnyNodeRef, ModModule, NodeKind, PySourceType, PythonVersion as RuffPythonVersion,
+    AnyNodeRef, Expr, ModModule, NodeKind, Operator, PySourceType,
+    PythonVersion as RuffPythonVersion, Stmt, UnaryOp,
 };
-use ruff_python_parser::{ParseOptions, parse_unchecked};
+use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_text_size::{Ranged, TextRange as RuffTextRange};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -281,6 +282,7 @@ pub struct ParsedModule {
     target_version: PythonVersion,
     comments: Vec<Comment>,
     nodes: Vec<SyntaxNode>,
+    facts: ModuleFacts,
     _syntax: ModModule,
 }
 
@@ -304,6 +306,126 @@ impl ParsedModule {
     pub fn nodes(&self) -> &[SyntaxNode] {
         &self.nodes
     }
+
+    pub fn facts(&self) -> &ModuleFacts {
+        &self.facts
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleFacts {
+    pub imports: Vec<ImportFact>,
+    pub classes: Vec<ClassFact>,
+    pub functions: Vec<FunctionFact>,
+    pub assignments: Vec<AssignmentFact>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ImportFact {
+    Import {
+        module: String,
+        alias: Option<String>,
+        range: ByteRange,
+    },
+    From {
+        module: Option<String>,
+        level: u32,
+        name: String,
+        alias: Option<String>,
+        range: ByteRange,
+    },
+    Wildcard {
+        module: Option<String>,
+        level: u32,
+        range: ByteRange,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassFact {
+    pub name: String,
+    pub path: PathBuf,
+    pub range: ByteRange,
+    pub bases: Vec<SemanticExpr>,
+    pub decorators: Vec<SemanticExpr>,
+    pub fields: Vec<AssignmentFact>,
+    pub members: Vec<AssignmentFact>,
+    pub methods: Vec<FunctionFact>,
+    pub nested_classes: Vec<ClassFact>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionFact {
+    pub name: String,
+    pub path: PathBuf,
+    pub range: ByteRange,
+    pub decorators: Vec<SemanticExpr>,
+    pub parameters: Vec<ParameterFact>,
+    pub returns: Option<SemanticExpr>,
+    pub assignments: Vec<AssignmentFact>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParameterKind {
+    PositionalOnly,
+    Positional,
+    VariadicPositional,
+    KeywordOnly,
+    VariadicKeyword,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParameterFact {
+    pub name: String,
+    pub range: ByteRange,
+    pub kind: ParameterKind,
+    pub annotation: Option<SemanticExpr>,
+    pub default: Option<SemanticExpr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssignmentFact {
+    pub name: String,
+    pub path: PathBuf,
+    pub range: ByteRange,
+    pub annotation: Option<SemanticExpr>,
+    pub value: Option<SemanticExpr>,
+    pub type_alias: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SemanticExpr {
+    Name(String),
+    Attribute {
+        value: Box<Self>,
+        name: String,
+    },
+    Subscript {
+        value: Box<Self>,
+        arguments: Vec<Self>,
+    },
+    Union {
+        left: Box<Self>,
+        right: Box<Self>,
+    },
+    Call {
+        function: Box<Self>,
+        arguments: Vec<Self>,
+        keywords: Vec<(Option<String>, Self)>,
+    },
+    Tuple(Vec<Self>),
+    List(Vec<Self>),
+    String(String),
+    Bytes(String),
+    Forward {
+        value: String,
+        expression: Option<Box<Self>>,
+    },
+    Number(String),
+    Boolean(bool),
+    None,
+    Ellipsis,
+    Unknown,
 }
 
 pub fn parse_module(
@@ -362,6 +484,7 @@ pub fn parse_module(
         .expect("module parse options must produce a module")
         .into_syntax();
     let nodes = NodeCollector::collect(&module);
+    let facts = extract_module_facts(&module, source.path(), source.text(), target_version);
 
     Ok(ParsedModule {
         source,
@@ -369,8 +492,421 @@ pub fn parse_module(
         target_version,
         comments,
         nodes,
+        facts,
         _syntax: module,
     })
+}
+
+fn extract_module_facts(
+    module: &ModModule,
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+) -> ModuleFacts {
+    let mut imports = Vec::new();
+    let mut classes = Vec::new();
+    let mut functions = Vec::new();
+    let mut assignments = Vec::new();
+    for statement in &module.body {
+        match statement {
+            Stmt::Import(import) => {
+                imports.extend(import.names.iter().map(|alias| ImportFact::Import {
+                    module: alias.name.to_string(),
+                    alias: alias.asname.as_ref().map(ToString::to_string),
+                    range: ByteRange::from_ruff(alias.range),
+                }));
+            }
+            Stmt::ImportFrom(import) => {
+                for alias in &import.names {
+                    if alias.name.as_str() == "*" {
+                        imports.push(ImportFact::Wildcard {
+                            module: import.module.as_ref().map(ToString::to_string),
+                            level: import.level,
+                            range: ByteRange::from_ruff(alias.range),
+                        });
+                    } else {
+                        imports.push(ImportFact::From {
+                            module: import.module.as_ref().map(ToString::to_string),
+                            level: import.level,
+                            name: alias.name.to_string(),
+                            alias: alias.asname.as_ref().map(ToString::to_string),
+                            range: ByteRange::from_ruff(alias.range),
+                        });
+                    }
+                }
+            }
+            Stmt::ClassDef(class) => {
+                classes.push(extract_class(class, path, source, target_version));
+            }
+            Stmt::FunctionDef(function) => {
+                functions.push(extract_function(function, path, source, target_version));
+            }
+            _ => assignments.extend(extract_assignments(statement, path, source, target_version)),
+        }
+    }
+    ModuleFacts {
+        imports,
+        classes,
+        functions,
+        assignments,
+    }
+}
+
+fn extract_class(
+    class: &ruff_python_ast::StmtClassDef,
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+) -> ClassFact {
+    let mut fields = Vec::new();
+    let mut members = Vec::new();
+    let mut methods = Vec::new();
+    let mut nested_classes = Vec::new();
+    for statement in &class.body {
+        match statement {
+            Stmt::FunctionDef(function) => {
+                methods.push(extract_function(function, path, source, target_version));
+            }
+            Stmt::ClassDef(class) => {
+                nested_classes.push(extract_class(class, path, source, target_version));
+            }
+            _ => {
+                let assignments = extract_assignments(statement, path, source, target_version);
+                fields.extend(
+                    assignments
+                        .iter()
+                        .filter(|assignment| assignment.annotation.is_some())
+                        .cloned(),
+                );
+                members.extend(assignments);
+            }
+        }
+    }
+    ClassFact {
+        name: class.name.to_string(),
+        path: path.to_owned(),
+        range: ByteRange::from_ruff(class.range),
+        bases: class
+            .arguments
+            .iter()
+            .flat_map(|arguments| &arguments.args)
+            .map(|expression| semantic_expr(expression, source, target_version, false))
+            .collect(),
+        decorators: class
+            .decorator_list
+            .iter()
+            .map(|decorator| semantic_expr(&decorator.expression, source, target_version, false))
+            .collect(),
+        fields,
+        members,
+        methods,
+        nested_classes,
+    }
+}
+
+fn extract_function(
+    function: &ruff_python_ast::StmtFunctionDef,
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+) -> FunctionFact {
+    let parameters = function
+        .parameters
+        .posonlyargs
+        .iter()
+        .map(|parameter| {
+            extract_parameter_with_default(
+                parameter,
+                ParameterKind::PositionalOnly,
+                source,
+                target_version,
+            )
+        })
+        .chain(function.parameters.args.iter().map(|parameter| {
+            extract_parameter_with_default(
+                parameter,
+                ParameterKind::Positional,
+                source,
+                target_version,
+            )
+        }))
+        .chain(function.parameters.vararg.iter().map(|parameter| {
+            extract_parameter(
+                parameter,
+                ParameterKind::VariadicPositional,
+                source,
+                target_version,
+            )
+        }))
+        .chain(function.parameters.kwonlyargs.iter().map(|parameter| {
+            extract_parameter_with_default(
+                parameter,
+                ParameterKind::KeywordOnly,
+                source,
+                target_version,
+            )
+        }))
+        .chain(function.parameters.kwarg.iter().map(|parameter| {
+            extract_parameter(
+                parameter,
+                ParameterKind::VariadicKeyword,
+                source,
+                target_version,
+            )
+        }))
+        .collect();
+    let assignments = function
+        .body
+        .iter()
+        .flat_map(|statement| extract_assignments(statement, path, source, target_version))
+        .collect();
+    FunctionFact {
+        name: function.name.to_string(),
+        path: path.to_owned(),
+        range: ByteRange::from_ruff(function.range),
+        decorators: function
+            .decorator_list
+            .iter()
+            .map(|decorator| semantic_expr(&decorator.expression, source, target_version, false))
+            .collect(),
+        parameters,
+        returns: function
+            .returns
+            .as_deref()
+            .map(|expression| semantic_expr(expression, source, target_version, true)),
+        assignments,
+    }
+}
+
+fn extract_parameter_with_default(
+    parameter: &ruff_python_ast::ParameterWithDefault,
+    kind: ParameterKind,
+    source: &str,
+    target_version: PythonVersion,
+) -> ParameterFact {
+    ParameterFact {
+        name: parameter.name().to_string(),
+        range: ByteRange::from_ruff(parameter.range),
+        kind,
+        annotation: parameter
+            .annotation()
+            .map(|expression| semantic_expr(expression, source, target_version, true)),
+        default: parameter
+            .default()
+            .map(|expression| semantic_expr(expression, source, target_version, false)),
+    }
+}
+
+fn extract_parameter(
+    parameter: &ruff_python_ast::Parameter,
+    kind: ParameterKind,
+    source: &str,
+    target_version: PythonVersion,
+) -> ParameterFact {
+    ParameterFact {
+        name: parameter.name.to_string(),
+        range: ByteRange::from_ruff(parameter.range),
+        kind,
+        annotation: parameter
+            .annotation()
+            .map(|expression| semantic_expr(expression, source, target_version, true)),
+        default: None,
+    }
+}
+
+fn extract_assignments(
+    statement: &Stmt,
+    path: &Path,
+    source: &str,
+    target_version: PythonVersion,
+) -> Vec<AssignmentFact> {
+    match statement {
+        Stmt::AnnAssign(assignment) => expression_name(&assignment.target)
+            .map(|name| {
+                vec![AssignmentFact {
+                    name,
+                    path: path.to_owned(),
+                    range: ByteRange::from_ruff(assignment.range),
+                    annotation: Some(semantic_expr(
+                        &assignment.annotation,
+                        source,
+                        target_version,
+                        true,
+                    )),
+                    value: assignment
+                        .value
+                        .as_deref()
+                        .map(|expression| semantic_expr(expression, source, target_version, false)),
+                    type_alias: false,
+                }]
+            })
+            .unwrap_or_default(),
+        Stmt::Assign(assignment) => assignment
+            .targets
+            .iter()
+            .filter_map(expression_name)
+            .map(|name| AssignmentFact {
+                name,
+                path: path.to_owned(),
+                range: ByteRange::from_ruff(assignment.range),
+                annotation: None,
+                value: Some(semantic_expr(
+                    &assignment.value,
+                    source,
+                    target_version,
+                    false,
+                )),
+                type_alias: false,
+            })
+            .collect(),
+        Stmt::TypeAlias(alias) => expression_name(&alias.name)
+            .map(|name| {
+                vec![AssignmentFact {
+                    name,
+                    path: path.to_owned(),
+                    range: ByteRange::from_ruff(alias.range),
+                    annotation: None,
+                    value: Some(semantic_expr(&alias.value, source, target_version, true)),
+                    type_alias: true,
+                }]
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn expression_name(expression: &Expr) -> Option<String> {
+    match expression {
+        Expr::Name(name) => Some(name.id.to_string()),
+        _ => None,
+    }
+}
+
+fn semantic_expr(
+    expression: &Expr,
+    source: &str,
+    target_version: PythonVersion,
+    annotation: bool,
+) -> SemanticExpr {
+    match expression {
+        Expr::Name(name) => SemanticExpr::Name(name.id.to_string()),
+        Expr::Attribute(attribute) => SemanticExpr::Attribute {
+            value: Box::new(semantic_expr(
+                &attribute.value,
+                source,
+                target_version,
+                false,
+            )),
+            name: attribute.attr.to_string(),
+        },
+        Expr::Subscript(subscript) => SemanticExpr::Subscript {
+            value: Box::new(semantic_expr(
+                &subscript.value,
+                source,
+                target_version,
+                false,
+            )),
+            arguments: match subscript.slice.as_ref() {
+                Expr::Tuple(tuple) => tuple
+                    .elts
+                    .iter()
+                    .map(|argument| semantic_expr(argument, source, target_version, true))
+                    .collect(),
+                argument => vec![semantic_expr(argument, source, target_version, true)],
+            },
+        },
+        Expr::BinOp(binary) if binary.op == Operator::BitOr => SemanticExpr::Union {
+            left: Box::new(semantic_expr(&binary.left, source, target_version, true)),
+            right: Box::new(semantic_expr(&binary.right, source, target_version, true)),
+        },
+        Expr::Call(call) => SemanticExpr::Call {
+            function: Box::new(semantic_expr(&call.func, source, target_version, false)),
+            arguments: call
+                .arguments
+                .args
+                .iter()
+                .map(|argument| semantic_expr(argument, source, target_version, false))
+                .collect(),
+            keywords: call
+                .arguments
+                .keywords
+                .iter()
+                .map(|keyword| {
+                    (
+                        keyword.arg.as_ref().map(ToString::to_string),
+                        semantic_expr(&keyword.value, source, target_version, false),
+                    )
+                })
+                .collect(),
+        },
+        Expr::Tuple(tuple) => SemanticExpr::Tuple(
+            tuple
+                .elts
+                .iter()
+                .map(|element| semantic_expr(element, source, target_version, annotation))
+                .collect(),
+        ),
+        Expr::List(list) => SemanticExpr::List(
+            list.elts
+                .iter()
+                .map(|element| semantic_expr(element, source, target_version, annotation))
+                .collect(),
+        ),
+        Expr::StringLiteral(string) if annotation => {
+            let value = string.value.to_str().to_owned();
+            SemanticExpr::Forward {
+                expression: parse_forward_annotation(&value, target_version).map(Box::new),
+                value,
+            }
+        }
+        Expr::StringLiteral(string) => SemanticExpr::String(string.value.to_str().to_owned()),
+        Expr::BytesLiteral(bytes) => SemanticExpr::Bytes(
+            source
+                .get(bytes.range.start().to_usize()..bytes.range.end().to_usize())
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Expr::NumberLiteral(number) => SemanticExpr::Number(
+            source
+                .get(number.range.start().to_usize()..number.range.end().to_usize())
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Expr::UnaryOp(unary) if matches!(unary.op, UnaryOp::UAdd | UnaryOp::USub) => {
+            match unary.operand.as_ref() {
+                Expr::NumberLiteral(_) => SemanticExpr::Number(
+                    source
+                        .get(unary.range.start().to_usize()..unary.range.end().to_usize())
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                _ => SemanticExpr::Unknown,
+            }
+        }
+        Expr::BooleanLiteral(boolean) => SemanticExpr::Boolean(boolean.value),
+        Expr::NoneLiteral(_) => SemanticExpr::None,
+        Expr::EllipsisLiteral(_) => SemanticExpr::Ellipsis,
+        _ => SemanticExpr::Unknown,
+    }
+}
+
+fn parse_forward_annotation(
+    annotation: &str,
+    target_version: PythonVersion,
+) -> Option<SemanticExpr> {
+    let options =
+        ParseOptions::from(Mode::Expression).with_target_version(target_version.to_ruff());
+    let parsed = parse_unchecked(annotation, options);
+    if !parsed.errors().is_empty() || !parsed.unsupported_syntax_errors().is_empty() {
+        return None;
+    }
+    let expression = parsed.try_into_expression()?.into_syntax();
+    Some(semantic_expr(
+        &expression.body,
+        annotation,
+        target_version,
+        true,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

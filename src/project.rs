@@ -222,8 +222,7 @@ impl Project {
         &self.config
     }
 
-    #[cfg(test)]
-    fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
@@ -237,8 +236,7 @@ impl Project {
         &self.workspace_members
     }
 
-    #[cfg(test)]
-    fn module_roots(&self) -> &[PathBuf] {
+    pub(crate) fn module_roots(&self) -> &[PathBuf] {
         &self.module_roots
     }
 
