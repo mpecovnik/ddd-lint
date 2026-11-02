@@ -399,7 +399,11 @@ impl ProjectGraph {
         scope: Option<&str>,
         expression: &SemanticExpr,
     ) -> Option<String> {
-        if let SemanticExpr::Name(name) = expression
+        let mut root = expression;
+        while let SemanticExpr::Attribute { value, .. } = root {
+            root = value;
+        }
+        if let SemanticExpr::Name(name) = root
             && self.is_locally_bound(module, scope, name)
         {
             return None;

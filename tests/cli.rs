@@ -462,6 +462,238 @@ fn ct002_resolves_assert_never_and_rejects_guarded_or_local_impostors() {
 }
 
 #[test]
+fn ct002_allows_wildcard_assert_never_on_names_and_attribute_chains() {
+    // Issue #3: exhaustive enum and class-union matches delegate to imported
+    // assert_never. Checking names or matching attribute chains exits cleanly,
+    // including aliases, qualified imports, and parenthesized expressions.
+    for (import, sink) in [
+        ("from typing import assert_never", "assert_never"),
+        ("from typing import assert_never as never", "never"),
+        ("import typing", "typing.assert_never"),
+        ("from typing_extensions import assert_never", "assert_never"),
+        (
+            "from typing_extensions import assert_never as never",
+            "never",
+        ),
+        ("import typing_extensions as te", "te.assert_never"),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        write(
+            &directory.path().join("pyproject.toml"),
+            "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n",
+        );
+        write(
+            &directory.path().join("model.py"),
+            &format!(
+                r#"{import}
+from enum import Enum
+class Status(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+class Draft: pass
+class Published: pass
+Document = Draft | Published
+class Box:
+    status: Status
+    document: Document
+class Envelope:
+    box: Box
+def enum_name(status: Status):
+    match status:
+        case Status.OPEN: pass
+        case Status.CLOSED: pass
+        case _: {sink}(status)
+def union_name(document: Document):
+    match document:
+        case Draft(): pass
+        case Published(): pass
+        case _: {sink}(document)
+def enum_attribute(box: Box):
+    match box.status:
+        case Status.OPEN: pass
+        case Status.CLOSED: pass
+        case _: {sink}((box).status)
+def union_attribute(envelope: Envelope):
+    match (envelope.box).document:
+        case Draft(): pass
+        case Published(): pass
+        case _: {sink}((envelope.box.document))
+"#
+            ),
+        );
+        let output = ddd_lint()
+            .current_dir(directory.path())
+            .arg("check")
+            .output()
+            .expect("ddd-lint should run");
+        assert!(
+            output.status.success(),
+            "{import}: {}{}",
+            stdout(&output),
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn ct001_reports_new_members_despite_wildcard_assert_never() {
+    // Adding enum and union members to previously exhaustive matches must emit
+    // CT001 for both missing cases, while their wildcard sinks remain CT002-free.
+    let directory = tempfile::tempdir().expect("temporary directory");
+    write(
+        &directory.path().join("pyproject.toml"),
+        "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n",
+    );
+    let source = r#"from enum import Enum
+from typing import assert_never
+class Status(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+class Draft: pass
+class Published: pass
+class Archived: pass
+Document = Draft | Published
+def enum_label(status: Status):
+    match status:
+        case Status.OPEN: pass
+        case Status.CLOSED: pass
+        case _: assert_never(status)
+def union_label(document: Document):
+    match document:
+        case Draft(): pass
+        case Published(): pass
+        case _: assert_never(document)
+"#;
+    write(&directory.path().join("model.py"), source);
+    let before = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    assert!(before.status.success(), "{}", stdout(&before));
+    assert!(before.stdout.is_empty());
+
+    let extended = source
+        .replace(
+            "    CLOSED = \"closed\"",
+            "    CLOSED = \"closed\"\n    ARCHIVED = \"archived\"",
+        )
+        .replace(
+            "Document = Draft | Published",
+            "Document = Draft | Published | Archived",
+        );
+    write(&directory.path().join("model.py"), &extended);
+    let after = ddd_lint()
+        .current_dir(directory.path())
+        .arg("check")
+        .output()
+        .expect("ddd-lint should run");
+    let findings = stdout(&after);
+    assert_eq!(after.status.code(), Some(1), "{findings}");
+    assert_eq!(findings.matches("CT001").count(), 2, "{findings}");
+    assert!(findings.contains("model.Status.ARCHIVED"), "{findings}");
+    assert!(findings.contains("model.Archived"), "{findings}");
+    assert!(!findings.contains("CT002"), "{findings}");
+}
+
+#[test]
+fn ct002_rejects_wildcards_without_a_resolved_sink_on_the_same_subject() {
+    // With every enum member covered, each unsupported fallback still emits
+    // exactly CT002: ordinary/guarded bodies, shadowed callees, wrong arguments,
+    // extra statements, or repeated calls that need not return the matched value.
+    for (setup, subject, fallback) in [
+        ("", "status", "case _: pass"),
+        ("", "status", "case _ if ready: assert_never(status)"),
+        (
+            "    def assert_never(value): pass\n",
+            "status",
+            "case _: assert_never(status)",
+        ),
+        (
+            "    assert_never = print\n",
+            "status",
+            "case _: assert_never(status)",
+        ),
+        (
+            "    typing = other\n",
+            "status",
+            "case _: typing.assert_never(status)",
+        ),
+        (
+            "    typing = other\n",
+            "status",
+            "case unexpected: typing.assert_never(unexpected)",
+        ),
+        ("", "status", "case _: assert_never(other)"),
+        ("", "box.status", "case _: assert_never(other_box.status)"),
+        ("", "box.status", "case _: assert_never(box.other)"),
+        ("", "status", "case _: assert_never(status, other)"),
+        ("", "status", "case _: assert_never(value=status)"),
+        ("", "status", "case _: assert_never(*status)"),
+        ("", "status", "case _: assert_never(status, **options)"),
+        ("", "status", "case _: print(status); assert_never(status)"),
+        ("", "status", "case _: assert_never(status); print(status)"),
+        ("", "status", "case _: return assert_never(status)"),
+        ("", "get_status()", "case _: assert_never(get_status())"),
+        (
+            "",
+            "get_box().status",
+            "case _: assert_never(get_box().status)",
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        write(
+            &directory.path().join("pyproject.toml"),
+            "[tool.ddd-lint]\nselect = [\"CT001\", \"CT002\"]\n",
+        );
+        write(
+            &directory.path().join("model.py"),
+            &format!(
+                r#"from enum import Enum
+from typing import assert_never
+import typing
+class Status(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+class Box:
+    status: Status
+    other: Status
+def get_status() -> Status: ...
+def get_box() -> Box: ...
+def label(status: Status, other: Status, box: Box, other_box: Box):
+{setup}    match {subject}:
+        case Status.OPEN: pass
+        case Status.CLOSED: pass
+        {fallback}
+"#
+            ),
+        );
+        let output = ddd_lint()
+            .current_dir(directory.path())
+            .args(["check", "--output-format", "json"])
+            .output()
+            .expect("ddd-lint should run");
+        let findings = stdout(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{setup}{subject}: {fallback}: {findings}{}",
+            stderr(&output)
+        );
+        let diagnostics: serde_json::Value =
+            serde_json::from_str(&findings).expect("JSON diagnostics");
+        let diagnostics = diagnostics.as_array().expect("diagnostic array");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "{setup}{subject}: {fallback}: {findings}"
+        );
+        assert_eq!(diagnostics[0]["code"], "CT002", "{findings}");
+    }
+}
+
+#[test]
 fn ct001_handles_or_as_guards_literals_enums_and_none() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(

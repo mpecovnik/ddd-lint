@@ -1662,6 +1662,7 @@ impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
                             guarded: case.guard.is_some(),
                             exhaustive_sink: case_exhaustive_sink(
                                 case,
+                                &statement.subject,
                                 self.source,
                                 self.target_version,
                             ),
@@ -1707,29 +1708,44 @@ impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
 
 fn case_exhaustive_sink(
     case: &ruff_python_ast::MatchCase,
+    subject: &Expr,
     source: &str,
     target_version: PythonVersion,
 ) -> Option<SemanticExpr> {
-    let capture = catch_all_capture(&case.pattern)?;
+    let Pattern::MatchAs(pattern) = &case.pattern else {
+        return None;
+    };
+    if pattern.pattern.is_some() {
+        return None;
+    }
     let [Stmt::Expr(statement)] = case.body.as_slice() else {
         return None;
     };
     let Expr::Call(call) = statement.value.as_ref() else {
         return None;
     };
-    (call.arguments.keywords.is_empty()
-        && matches!(call.arguments.args.as_ref(), [Expr::Name(name)] if name.id.as_str() == capture))
-    .then(|| semantic_expr(&call.func, source, target_version, false))
-}
-
-fn catch_all_capture(pattern: &Pattern) -> Option<&str> {
-    let Pattern::MatchAs(pattern) = pattern else {
+    let [argument] = call.arguments.args.as_ref() else {
         return None;
     };
-    if pattern.pattern.is_some() {
-        return None;
+    let matches_value = match &pattern.name {
+        Some(capture) => matches!(argument, Expr::Name(name) if name.id == capture.id),
+        None => same_subject_reference(subject, argument),
+    };
+    (call.arguments.keywords.is_empty() && matches_value)
+        .then(|| semantic_expr(&call.func, source, target_version, false))
+}
+
+fn same_subject_reference(subject: &Expr, argument: &Expr) -> bool {
+    // Compare reference syntax only. Re-evaluating calls or subscripts need not
+    // produce the matched value, even when their source text is identical.
+    match (subject, argument) {
+        (Expr::Name(subject), Expr::Name(argument)) => subject.id == argument.id,
+        (Expr::Attribute(subject), Expr::Attribute(argument)) => {
+            subject.attr.as_str() == argument.attr.as_str()
+                && same_subject_reference(&subject.value, &argument.value)
+        }
+        _ => false,
     }
-    pattern.name.as_ref().map(|name| name.id.as_str())
 }
 
 fn collect_direct_tests(

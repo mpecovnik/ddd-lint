@@ -8,17 +8,17 @@ Default: disabled.
 
 ## Summary
 
-When enabled, reject wildcard and capture fallback cases when matching a closed type.
+When enabled, reject wildcard and capture fallback cases when matching a closed type, except recognized `assert_never` exhaustiveness sinks.
 
 ## Why
 
 A catch-all makes a match total today but hides future members from ordinary control flow. Explicit cases preserve change detection. `CT001`, when enabled separately, ignores wildcard coverage and reports members missing from explicit patterns.
 
-DDD Lint provides `CT001` as its exhaustiveness check, so an `assert_never` wildcard pattern is unnecessary when both rules are selected.
-
-A named capture used only as the argument to `assert_never` is allowed. This preserves projects that deliberately delegate exhaustiveness checking to a type checker:
+A named capture used only as the argument to `assert_never` is allowed. A wildcard calling `assert_never` on the match subject is also allowed. Both idioms preserve projects that deliberately delegate exhaustiveness checking to a type checker:
 
 ```python
+from typing import assert_never
+
 match status:
     case Status.OPEN:
         open_order()
@@ -28,7 +28,23 @@ match status:
         assert_never(unexpected)
 ```
 
-The case body must consist only of `assert_never` called with that same capture. Ordinary captures and wildcards still trigger `CT002`.
+Equivalent wildcard form:
+
+```python
+match status:
+    case Status.OPEN:
+        open_order()
+    case Status.CLOSED:
+        close_order()
+    case _:
+        assert_never(status)
+```
+
+For either idiom, the case must be unguarded and its body must consist solely of a call expression with one positional argument and no keyword arguments. The callee must resolve to `typing.assert_never` or `typing_extensions.assert_never`; imported aliases and qualified calls are supported. A shadowed or unrelated function with the same name does not qualify.
+
+A named capture must pass that capture. A wildcard must pass the same name or name-rooted attribute chain as the match subject, such as `status`, `order.status`, or `envelope.order.status`. Parentheses do not affect matching. This is a syntactic reference comparison within the declared-type analysis boundary, not proof against dynamic attribute behavior or intervening side effects. Repeated calls such as `get_status()` and other expressions such as subscripts are not recognized as the same value.
+
+Neither sink contributes explicit member coverage: `CT001`, when enabled, still reports missing members, including members added later. Ordinary captures and wildcards still trigger `CT002`.
 
 ## Example
 
