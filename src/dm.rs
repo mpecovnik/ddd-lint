@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use crate::config::Dm002Config;
 use crate::diagnostics::Diagnostic;
-use crate::graph::ProjectGraph;
+use crate::graph::{FieldInfo, ProjectGraph};
 use crate::rules::RuleCode;
 
 pub fn run(graph: &ProjectGraph, enabled: &[RuleCode], dm002: &Dm002Config) -> Vec<Diagnostic> {
@@ -22,6 +22,7 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode], dm002: &Dm002Config) -> V
         }
         let nullable = fields
             .iter()
+            .copied()
             .filter(|field| ProjectGraph::top_level_admits_none(&field.annotation))
             .collect::<Vec<_>>();
         if selected.contains("DM001") {
@@ -62,8 +63,44 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode], dm002: &Dm002Config) -> V
                 )
             }));
         }
+        if selected.contains("DM004") {
+            diagnostics.extend(event_metadata_diagnostics(&nullable));
+        }
     }
     diagnostics
+}
+
+fn event_metadata_diagnostics(nullable: &[&FieldInfo]) -> Vec<Diagnostic> {
+    let fields = nullable
+        .iter()
+        .map(|field| (field.name.as_str(), *field))
+        .collect::<BTreeMap<_, _>>();
+    fields
+        .values()
+        .filter_map(|actor| {
+            let prefix = actor.name.strip_suffix("_by")?;
+            if prefix.chars().count() < 5 {
+                return None;
+            }
+            let timestamp_name = format!("{prefix}_at");
+            let timestamp = fields.get(timestamp_name.as_str())?;
+            let first = if actor.range.start() <= timestamp.range.start() {
+                actor
+            } else {
+                timestamp
+            };
+            Some(Diagnostic::new(
+                &first.path,
+                first.range,
+                rule("DM004"),
+                format!(
+                    "nullable event metadata `{}` and `{}` share prefix `{prefix}`",
+                    actor.name, timestamp.name
+                ),
+                "group the actor and timestamp into one optional metadata value or document independent absence",
+            ))
+        })
+        .collect()
 }
 
 fn rule(code: &str) -> RuleCode {

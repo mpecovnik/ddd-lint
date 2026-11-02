@@ -299,7 +299,7 @@ fn resolved_config_expands_selectors_and_prints_rule_and_exception_settings() {
     assert!(output.status.success(), "{}", stderr(&output));
     let rendered = stdout(&output);
     assert!(
-        rendered.contains("enabled-rules = [\"DM001\", \"DM002\", \"DI001\"]"),
+        rendered.contains("enabled-rules = [\"DM001\", \"DM002\", \"DM004\", \"DI001\"]"),
         "{rendered}"
     );
     assert!(rendered.contains("min-nullable-fields = 4"), "{rendered}");

@@ -75,11 +75,7 @@ No rules are enabled by default. Add the recommended profile to the project or u
 
 ```toml
 [tool.ddd-lint]
-select = ["DM002", "CT", "DI001"]
-
-[tool.ddd-lint.rules.DM002]
-min-nullable-fields = 3
-min-nullable-ratio = 0.30
+select = ["DM004", "CT", "DI001"]
 ```
 
 Then run:
@@ -88,13 +84,13 @@ Then run:
 ddd-lint check .
 ```
 
-`CT003` defaults to multi-branch dispatch checks. Single predicates and type guards remain allowed; see [CT003](docs/rules/ct003-conditional-closed-type-dispatch.md) for the conservative detection boundary.
+`DM004` targets nullable event-metadata pairs such as `selected_by` / `selected_at`. Add `DM002` separately for broader nullable-concentration review. `CT003` defaults to multi-branch dispatch checks. Single predicates and type guards remain allowed; see [CT003](docs/rules/ct003-conditional-closed-type-dispatch.md) for the conservative detection boundary.
 
 Strict policy can enable per-field checks, stale-suppression detection, and the original strict conditional-member checks:
 
 ```toml
 [tool.ddd-lint]
-select = ["DM001", "DM002", "DM003", "CT", "DI001", "SUP001"]
+select = ["DM001", "DM002", "DM003", "DM004", "CT", "DI001", "SUP001"]
 
 [tool.ddd-lint.rules.CT003]
 mode = "strict"
@@ -107,6 +103,7 @@ mode = "strict"
 | [`DM001`](docs/rules/dm001-nullable-model-field.md) | Nullable model field | Reject any Pydantic field explicitly admitting `None`. |
 | [`DM002`](docs/rules/dm002-nullable-heavy-model.md) | Nullable-heavy model | Detect configured concentrations of nullable fields. |
 | [`DM003`](docs/rules/dm003-defaulted-model-field.md) | Defaulted model field | Require explicit values at Pydantic model construction. |
+| [`DM004`](docs/rules/dm004-nullable-event-metadata-pair.md) | Nullable event-metadata pair | Group nullable actor/time pairs into optional metadata values. |
 | [`CT001`](docs/rules/ct001-non-exhaustive-match.md) | Non-exhaustive match | Require explicit coverage of closed-type members. |
 | [`CT002`](docs/rules/ct002-catch-all-on-closed-type.md) | Catch-all on closed type | Keep new members visible by rejecting wildcard cases. |
 | [`CT003`](docs/rules/ct003-conditional-closed-type-dispatch.md) | Conditional closed-type dispatch | Prefer exhaustive match over multi-member conditional dispatch. |

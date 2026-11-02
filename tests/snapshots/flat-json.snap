@@ -116,6 +116,25 @@ stdout:
     "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
   },
   {
+    "code": "DM004",
+    "name": "nullable-event-metadata-pair",
+    "family": "Domain model",
+    "path": "metadata.py",
+    "range": {
+      "start": {
+        "line": 8,
+        "column": 5
+      },
+      "end": {
+        "line": 8,
+        "column": 28
+      }
+    },
+    "message": "nullable event metadata `selected_by` and `selected_at` share prefix `selected`",
+    "remediation": "group the actor and timestamp into one optional metadata value or document independent absence",
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm004-nullable-event-metadata-pair.md"
+  },
+  {
     "code": "DM001",
     "name": "nullable-model-field",
     "family": "Domain model",

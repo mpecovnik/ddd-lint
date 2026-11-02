@@ -573,7 +573,7 @@ mod tests {
             .map(|code| code.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(enabled, ["DM001", "DM003", "DI001", "SUP001"]);
+        assert_eq!(enabled, ["DM001", "DM003", "DM004", "DI001", "SUP001"]);
     }
 
     #[test]

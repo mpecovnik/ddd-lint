@@ -5,6 +5,7 @@
 | DM001 | `flat/models.py:NullableOrder` | `flat/clean.py:RequiredOrder` | `flat/models.py:SuppressedOrder.optional_note` | `flat/uncertain.py:DynamicRecord` |
 | DM002 | `flat/models.py:SparseOrder` | `flat/clean.py:SmallRecord` | `flat/models.py:SuppressedOrder` | `flat/uncertain.py:DynamicRecord` |
 | DM003 | `flat/models.py:DefaultedOrder` | `flat/clean.py:RequiredOrder` | `flat/models.py:SuppressedOrder.source` | `flat/uncertain.py:DynamicRecord` |
+| DM004 | `flat/metadata.py:Selection` | `flat/metadata.py:GroupedSelection` | `flat/metadata.py:SystemEvent` | `flat/metadata.py:ExternalEvent` |
 | CT001 | `flat/handlers.py:incomplete` | `flat/clean.py:exhaustive` | `flat/suppressed.py:suppressed_incomplete` | `flat/uncertain.py:overlap` |
 | CT002 | `flat/handlers.py:catch_all` | `flat/clean.py:exhaustive` | `flat/suppressed.py:suppressed_catch_all` | `flat/uncertain.py:overlap` |
 | CT003 | `flat/handlers.py:conditional` | `flat/clean.py:exhaustive` | `flat/suppressed.py:suppressed_conditional` | `flat/uncertain.py:helper_dispatch` |

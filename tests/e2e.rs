@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const RULES: [&str; 9] = [
-    "DM001", "DM002", "DM003", "CT001", "CT002", "CT003", "CT004", "DI001", "SUP001",
+const RULES: [&str; 10] = [
+    "DM001", "DM002", "DM003", "DM004", "CT001", "CT002", "CT003", "CT004", "DI001", "SUP001",
 ];
 
 fn fixture(name: &str) -> PathBuf {

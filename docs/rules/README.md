@@ -11,6 +11,7 @@ Pydantic model rules inspect `BaseModel` subclasses but exclude `RootModel` and 
 | [`DM001`](dm001-nullable-model-field.md) | `nullable-model-field` | Require every Pydantic model field to reject `None`. |
 | [`DM002`](dm002-nullable-heavy-model.md) | `nullable-heavy-model` | Detect models with a configured concentration of nullable fields. |
 | [`DM003`](dm003-defaulted-model-field.md) | `defaulted-model-field` | Require callers to supply every Pydantic model field explicitly. |
+| [`DM004`](dm004-nullable-event-metadata-pair.md) | `nullable-event-metadata-pair` | Group nullable `<prefix>_by` / `<prefix>_at` pairs into optional metadata values. |
 
 ## Closed Type
 
@@ -39,16 +40,16 @@ Practical onboarding:
 
 ```toml
 [tool.ddd-lint]
-select = ["DM002", "CT", "DI001"]
+select = ["DM004", "CT", "DI001"]
 ```
 
-Onboarding uses CT003's default `dispatch` mode: multi-branch variant dispatch is reported, while single predicates and type guards remain allowed.
+Onboarding uses DM004's focused event-metadata check rather than DM002's broad nullable-concentration heuristic. Add DM002 explicitly when that broader review is wanted. CT003 uses its default `dispatch` mode: multi-branch variant dispatch is reported, while single predicates and type guards remain allowed.
 
 Strict model construction and conditional-member policy:
 
 ```toml
 [tool.ddd-lint]
-select = ["DM001", "DM002", "DM003", "CT", "DI001", "SUP001"]
+select = ["DM001", "DM002", "DM003", "DM004", "CT", "DI001", "SUP001"]
 
 [tool.ddd-lint.rules.CT003]
 mode = "strict"

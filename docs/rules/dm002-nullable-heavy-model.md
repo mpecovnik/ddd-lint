@@ -10,6 +10,8 @@ Default: disabled.
 
 Detect a Pydantic `BaseModel` whose declared fields meet both a nullable count and nullable ratio threshold. A finding invites review of field relationships; it does not establish a domain-model defect.
 
+Recommended onboarding uses [DM004](dm004-nullable-event-metadata-pair.md) for focused nullable actor/time pairs. Enable DM002 additionally when broader concentration-based review is wanted.
+
 ## Why
 
 Clusters of nullable fields can indicate one broad schema representing several lifecycle states. If different field combinations are valid in different states, a class union can represent those states directly.

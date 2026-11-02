@@ -79,6 +79,13 @@ pub const RULES: &[RuleSummary] = &[
         configuration: NO_CONFIGURATION,
     },
     RuleSummary {
+        code: "DM004",
+        name: "nullable-event-metadata-pair",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm004-nullable-event-metadata-pair.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
         code: "CT001",
         name: "non-exhaustive-match",
         family: CLOSED_TYPE,
