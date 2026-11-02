@@ -153,6 +153,8 @@ DDD Lint will use a project-wide declared-type graph rather than a full type che
 
 Normal projects use `.` and `src` as default import roots. uv workspaces are detected from `[tool.uv.workspace]`, analyzed as one cross-package graph, and governed by the root `[tool.ddd-lint]` policy.
 
+Workspace members containing a `src/` directory use it as their application import root; flat-layout members use their member directory. Sibling files remain analyzed under workspace-relative identities, so `packages/api/tests/conftest.py` and `packages/infra/tests/conftest.py` stay distinct. Relative test imports remain local to each test tree, while application imports resolve across members. Nested members use their own layout rather than inheriting an enclosing member's import root. Duplicate application module names still fail with a configuration error.
+
 V1 targets Python 3.10+ and Pydantic 2. Pydantic dataclasses, `RootModel`, notebooks, persistent cache, editor integration, and autofix are deferred.
 
 ## Documentation

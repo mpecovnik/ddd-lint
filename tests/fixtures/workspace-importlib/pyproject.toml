@@ -1,0 +1,8 @@
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+
+[tool.ddd-lint]
+select = ["CT001", "DM004"]

@@ -183,7 +183,13 @@ impl ProjectGraph {
         let mut identities = BTreeMap::<String, ModuleIdentity>::new();
         let mut derived = BTreeMap::<PathBuf, Option<(String, bool)>>::new();
         for path in &supporting {
-            let identity = derive_module(path, &module_roots)?;
+            let member = project.owning_workspace_member(path);
+            // Nested members own their layout. Ancestor import roots must not
+            // strip the workspace-relative identity of files beside their src/.
+            let roots = module_roots.iter().map(PathBuf::as_path).filter(|root| {
+                member.is_none_or(|member| *root == project.root() || root.starts_with(member))
+            });
+            let identity = derive_module(path, roots)?;
             if let Some((name, is_package)) = &identity {
                 let entry = identities.entry(name.clone()).or_default();
                 let paths = if path.extension().is_some_and(|extension| extension == "pyi") {
@@ -1521,9 +1527,11 @@ fn normalized_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     roots
 }
 
-fn derive_module(path: &Path, roots: &[PathBuf]) -> Result<Option<(String, bool)>, GraphError> {
+fn derive_module<'a>(
+    path: &Path,
+    roots: impl Iterator<Item = &'a Path>,
+) -> Result<Option<(String, bool)>, GraphError> {
     let mut candidates = roots
-        .iter()
         .filter_map(|root| {
             let relative = path.strip_prefix(root).ok()?;
             Some((root.components().count(), relative))

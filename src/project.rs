@@ -201,10 +201,10 @@ impl Project {
             }
         }
 
-        let mut module_roots = BTreeSet::new();
-        for project_root in std::iter::once(&root).chain(&workspace_members) {
-            module_roots.insert(project_root.to_owned());
-            module_roots.insert(project_root.join("src"));
+        let mut module_roots = BTreeSet::from([root.clone(), root.join("src")]);
+        for member in &workspace_members {
+            let src = member.join("src");
+            module_roots.insert(if src.is_dir() { src } else { member.clone() });
         }
 
         Ok(Self {
@@ -237,6 +237,14 @@ impl Project {
 
     pub(crate) fn module_roots(&self) -> &[PathBuf] {
         &self.module_roots
+    }
+
+    pub(crate) fn owning_workspace_member(&self, path: &Path) -> Option<&Path> {
+        self.workspace_members
+            .iter()
+            .filter(|member| path.starts_with(member))
+            .max_by_key(|member| member.components().count())
+            .map(PathBuf::as_path)
     }
 
     pub fn discover_files(
@@ -651,14 +659,7 @@ mod tests {
         );
         assert_eq!(
             names(project.module_roots(), &root),
-            [
-                "",
-                "packages/alpha",
-                "packages/alpha/src",
-                "packages/beta",
-                "packages/beta/src",
-                "src"
-            ]
+            ["", "packages/alpha/src", "packages/beta/src", "src"]
         );
 
         let files = project
