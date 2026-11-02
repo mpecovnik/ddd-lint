@@ -88,11 +88,16 @@ Then run:
 ddd-lint check .
 ```
 
-Strict model construction can enable per-field checks and stale-suppression detection:
+`CT003` defaults to multi-branch dispatch checks. Single predicates and type guards remain allowed; see [CT003](docs/rules/ct003-conditional-closed-type-dispatch.md) for the conservative detection boundary.
+
+Strict policy can enable per-field checks, stale-suppression detection, and the original strict conditional-member checks:
 
 ```toml
 [tool.ddd-lint]
 select = ["DM001", "DM002", "DM003", "CT", "DI001", "SUP001"]
+
+[tool.ddd-lint.rules.CT003]
+mode = "strict"
 ```
 
 ## Rules
@@ -104,7 +109,7 @@ select = ["DM001", "DM002", "DM003", "CT", "DI001", "SUP001"]
 | [`DM003`](docs/rules/dm003-defaulted-model-field.md) | Defaulted model field | Require explicit values at Pydantic model construction. |
 | [`CT001`](docs/rules/ct001-non-exhaustive-match.md) | Non-exhaustive match | Require explicit coverage of closed-type members. |
 | [`CT002`](docs/rules/ct002-catch-all-on-closed-type.md) | Catch-all on closed type | Keep new members visible by rejecting wildcard cases. |
-| [`CT003`](docs/rules/ct003-conditional-closed-type-dispatch.md) | Conditional closed-type dispatch | Prefer exhaustive match over member-selecting conditionals. |
+| [`CT003`](docs/rules/ct003-conditional-closed-type-dispatch.md) | Conditional closed-type dispatch | Prefer exhaustive match over multi-member conditional dispatch. |
 | [`CT004`](docs/rules/ct004-discriminator-match.md) | Discriminator match | Match class unions through member class patterns. |
 | [`DI001`](docs/rules/di001-hidden-constructor-fallback.md) | Hidden constructor fallback | Require explicit collaborator composition. |
 | [`SUP001`](docs/rules/sup001-unused-suppression.md) | Unused suppression | Remove stale design exceptions. |

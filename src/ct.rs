@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
+use crate::config::{Ct003Config, Ct003Mode};
 use crate::diagnostics::Diagnostic;
 use crate::graph::{
     ClosedDomain, ClosedMember, LiteralValue, ProjectGraph, literal_value, typing_equal,
 };
 use crate::python::{
-    ClosedTypeSiteFact, ConditionalFact, DirectTestFact, MatchFact, PatternFact, SemanticExpr,
-    SingletonFact,
+    ClosedTypeSiteFact, ConditionalFact, DirectTestFact, DispatchFact, MatchFact, PatternFact,
+    SemanticExpr, SingletonFact,
 };
 use crate::rules::RuleCode;
 
-pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
+pub fn run(graph: &ProjectGraph, enabled: &[RuleCode], ct003: &Ct003Config) -> Vec<Diagnostic> {
     let selected = enabled
         .iter()
         .map(|rule| rule.as_str())
@@ -30,6 +31,7 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
         let path = match site {
             ClosedTypeSiteFact::Match(site) => &site.path,
             ClosedTypeSiteFact::Conditional(site) => &site.path,
+            ClosedTypeSiteFact::Dispatch(site) => &site.path,
         };
         if !diagnostic_paths.contains(path) {
             continue;
@@ -38,10 +40,17 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
             ClosedTypeSiteFact::Match(site) => {
                 analyze_match(graph, module, site, &selected, &mut diagnostics)
             }
-            ClosedTypeSiteFact::Conditional(site) if selected.contains("CT003") => {
+            ClosedTypeSiteFact::Conditional(site)
+                if selected.contains("CT003") && ct003.mode == Ct003Mode::Strict =>
+            {
                 analyze_conditional(graph, module, site, &mut diagnostics)
             }
-            ClosedTypeSiteFact::Conditional(_) => {}
+            ClosedTypeSiteFact::Dispatch(site)
+                if selected.contains("CT003") && ct003.mode == Ct003Mode::Dispatch =>
+            {
+                analyze_dispatch(graph, module, site, &mut diagnostics)
+            }
+            ClosedTypeSiteFact::Conditional(_) | ClosedTypeSiteFact::Dispatch(_) => {}
         }
     }
     diagnostics
@@ -137,19 +146,7 @@ fn analyze_conditional(
     site: &ConditionalFact,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let recognized = match &site.test {
-        DirectTestFact::IsInstance { value, member } => {
-            graph.builtin_is_unshadowed(module, site.scope.as_deref(), "isinstance")
-                && class_member_test(graph, module, site.scope.as_deref(), value, member)
-        }
-        DirectTestFact::Compare { left, right, .. } => {
-            type_member_comparison(graph, module, site.scope.as_deref(), left, right)
-                || type_member_comparison(graph, module, site.scope.as_deref(), right, left)
-                || value_member_comparison(graph, module, site.scope.as_deref(), left, right)
-                || value_member_comparison(graph, module, site.scope.as_deref(), right, left)
-        }
-    };
-    if recognized {
+    if member_selection(graph, module, site.scope.as_deref(), &site.test).is_some() {
         diagnostics.push(Diagnostic::new(
             &site.path,
             site.range,
@@ -160,56 +157,133 @@ fn analyze_conditional(
     }
 }
 
-fn class_member_test(
+fn analyze_dispatch(
+    graph: &ProjectGraph,
+    module: &str,
+    site: &DispatchFact,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(selections) = site
+        .tests
+        .iter()
+        .map(|test| member_selection(graph, module, site.scope.as_deref(), test))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+    // Dispatch facts contain at least two tests, established by the parser adapter.
+    let first = &selections[0];
+    if !is_subject_reference(first.subject)
+        || selections
+            .iter()
+            .any(|selection| selection.subject != first.subject)
+    {
+        return;
+    }
+    let members = selections
+        .iter()
+        .map(|selection| &selection.member)
+        .collect::<BTreeSet<_>>();
+    if members.len() >= 2 {
+        diagnostics.push(Diagnostic::new(
+            &site.path,
+            site.range,
+            rule("CT003"),
+            "conditional dispatch selects multiple members of the same closed type",
+            "use an exhaustive match statement for closed-type dispatch",
+        ));
+    }
+}
+
+fn is_subject_reference(expression: &SemanticExpr) -> bool {
+    match expression {
+        SemanticExpr::Name(_) => true,
+        SemanticExpr::Attribute { value, .. } => is_subject_reference(value),
+        _ => false,
+    }
+}
+
+struct MemberSelection<'a> {
+    subject: &'a SemanticExpr,
+    member: String,
+}
+
+fn member_selection<'a>(
     graph: &ProjectGraph,
     module: &str,
     scope: Option<&str>,
-    value: &SemanticExpr,
+    test: &'a DirectTestFact,
+) -> Option<MemberSelection<'a>> {
+    match test {
+        DirectTestFact::IsInstance { value, member } => {
+            if graph.builtin_is_unshadowed(module, scope, "isinstance") {
+                class_member_test(graph, module, scope, value, member)
+            } else {
+                None
+            }
+        }
+        DirectTestFact::Compare { left, right, .. } => {
+            type_member_comparison(graph, module, scope, left, right)
+                .or_else(|| type_member_comparison(graph, module, scope, right, left))
+                .or_else(|| value_member_comparison(graph, module, scope, left, right))
+                .or_else(|| value_member_comparison(graph, module, scope, right, left))
+        }
+    }
+}
+
+fn class_member_test<'a>(
+    graph: &ProjectGraph,
+    module: &str,
+    scope: Option<&str>,
+    value: &'a SemanticExpr,
     member: &SemanticExpr,
-) -> bool {
+) -> Option<MemberSelection<'a>> {
     let Some(ClosedDomain::ClassUnion(members)) =
         graph.closed_domain(&graph.site_type(module, scope, value))
     else {
-        return false;
+        return None;
     };
-    let Some(symbol) = graph.site_symbol(module, scope, member) else {
-        return false;
-    };
-    members.contains(&ClosedMember::Class(symbol))
+    let symbol = graph.site_symbol(module, scope, member)?;
+    members
+        .contains(&ClosedMember::Class(symbol.clone()))
+        .then_some(MemberSelection {
+            subject: value,
+            member: symbol,
+        })
 }
 
-fn type_member_comparison(
+fn type_member_comparison<'a>(
     graph: &ProjectGraph,
     module: &str,
     scope: Option<&str>,
-    type_call: &SemanticExpr,
+    type_call: &'a SemanticExpr,
     member: &SemanticExpr,
-) -> bool {
+) -> Option<MemberSelection<'a>> {
     let SemanticExpr::Call {
         function,
         arguments,
         keywords,
     } = type_call
     else {
-        return false;
+        return None;
     };
     if !matches!(function.as_ref(), SemanticExpr::Name(name) if name == "type")
         || arguments.len() != 1
         || !keywords.is_empty()
         || !graph.builtin_is_unshadowed(module, scope, "type")
     {
-        return false;
+        return None;
     }
     class_member_test(graph, module, scope, &arguments[0], member)
 }
 
-fn value_member_comparison(
+fn value_member_comparison<'a>(
     graph: &ProjectGraph,
     module: &str,
     scope: Option<&str>,
-    value: &SemanticExpr,
+    value: &'a SemanticExpr,
     member: &SemanticExpr,
-) -> bool {
+) -> Option<MemberSelection<'a>> {
     if let SemanticExpr::Attribute { value: base, name } = value
         && let Some(ClosedDomain::ClassUnion(members)) =
             graph.closed_domain(&graph.site_type(module, scope, base))
@@ -220,27 +294,37 @@ fn value_member_comparison(
         let domain = ClosedDomain::ClassUnion(members);
         if let Some(discriminator) = graph.common_discriminator(&domain)
             && discriminator.field == *name
-            && literal_value(member).is_some_and(|candidate| {
-                discriminator
-                    .values
-                    .values()
-                    .any(|value| literal_same(value, &candidate))
-            })
+            && let Some(candidate) = literal_value(member)
+            && let Some((class, _)) = discriminator
+                .values
+                .iter()
+                .find(|(_, value)| literal_same(value, &candidate))
         {
-            return true;
+            return Some(MemberSelection {
+                subject: base,
+                member: class.clone(),
+            });
         }
     }
-    let Some(domain) = graph.closed_domain(&graph.site_type(module, scope, value)) else {
-        return false;
-    };
-    match domain {
-        ClosedDomain::Literal(values) => literal_value(member)
-            .is_some_and(|candidate| values.iter().any(|value| literal_same(value, &candidate))),
+    let domain = graph.closed_domain(&graph.site_type(module, scope, value))?;
+    let member = match domain {
+        ClosedDomain::Literal(values) => {
+            let candidate = literal_value(member)?;
+            let value = values
+                .iter()
+                .find(|value| literal_same(value, &candidate))?;
+            format_literal(value)
+        }
         ClosedDomain::Enum { class, members } => {
-            enum_member(graph, module, scope, member, &class, &members).is_some()
+            let member = enum_member(graph, module, scope, member, &class, &members)?;
+            format!("{class}.{member}")
         }
-        ClosedDomain::ClassUnion(_) => false,
-    }
+        ClosedDomain::ClassUnion(_) => return None,
+    };
+    Some(MemberSelection {
+        subject: value,
+        member,
+    })
 }
 
 fn pattern_members(

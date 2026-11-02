@@ -346,6 +346,7 @@ pub enum ConstructorFallbackKind {
 pub enum ClosedTypeSiteFact {
     Match(MatchFact),
     Conditional(ConditionalFact),
+    Dispatch(DispatchFact),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -422,6 +423,14 @@ pub struct ConditionalFact {
     pub scope: Option<String>,
     pub range: ByteRange,
     pub test: DirectTestFact,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DispatchFact {
+    pub path: PathBuf,
+    pub scope: Option<String>,
+    pub range: ByteRange,
+    pub tests: Vec<DirectTestFact>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1609,9 +1618,7 @@ impl<'a> ClosedTypeCollector<'a> {
             excluded_expressions: 0,
             facts: Vec::new(),
         };
-        for statement in &module.body {
-            collector.visit_stmt(statement);
-        }
+        collector.visit_body(&module.body);
         collector.facts
     }
 
@@ -1632,9 +1639,50 @@ impl<'a> ClosedTypeCollector<'a> {
             })
         }));
     }
+
+    fn collect_dispatch(&mut self, expressions: &[&Expr]) {
+        if expressions.len() < 2 {
+            return;
+        }
+        let Some(tests) = expressions
+            .iter()
+            .map(|expression| direct_dispatch_test(expression, self.source, self.target_version))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        self.facts.push(ClosedTypeSiteFact::Dispatch(DispatchFact {
+            path: self.path.to_owned(),
+            scope: self.scope(),
+            range: ByteRange::from_ruff(expressions[0].range()),
+            tests,
+        }));
+    }
 }
 
 impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
+    fn visit_body(&mut self, body: &'a [Stmt]) {
+        let mut tests = Vec::new();
+        for statement in body {
+            // Only adjacent, no-else branches with an explicit exit form an
+            // early-exit dispatch. Do not infer termination through nested flow.
+            if let Stmt::If(statement) = statement
+                && statement.elif_else_clauses.is_empty()
+                && matches!(
+                    statement.body.last(),
+                    Some(Stmt::Return(_) | Stmt::Raise(_))
+                )
+            {
+                tests.push(statement.test.as_ref());
+            } else {
+                self.collect_dispatch(&tests);
+                tests.clear();
+            }
+        }
+        self.collect_dispatch(&tests);
+        ruff_python_ast::visitor::source_order::walk_body(self, body);
+    }
+
     fn enter_node(
         &mut self,
         node: AnyNodeRef<'a>,
@@ -1671,12 +1719,15 @@ impl<'a> SourceOrderVisitor<'a> for ClosedTypeCollector<'_> {
                 }));
             }
             AnyNodeRef::StmtIf(statement) => {
+                let mut tests = vec![statement.test.as_ref()];
                 self.collect_test(&statement.test);
                 for clause in &statement.elif_else_clauses {
                     if let Some(test) = &clause.test {
+                        tests.push(test);
                         self.collect_test(test);
                     }
                 }
+                self.collect_dispatch(&tests);
             }
             AnyNodeRef::ExprIf(expression) if self.excluded_expressions == 0 => {
                 self.collect_test(&expression.test);
@@ -1794,6 +1845,24 @@ fn collect_direct_tests(
         }
         _ => {}
     }
+}
+
+fn direct_dispatch_test(
+    expression: &Expr,
+    source: &str,
+    target_version: PythonVersion,
+) -> Option<DirectTestFact> {
+    // A branch must select one member positively. Boolean combinations,
+    // negation and chained comparisons do not establish variant dispatch.
+    match expression {
+        Expr::Call(_) => {}
+        Expr::Compare(comparison) if matches!(comparison.ops.as_ref(), [CmpOp::Eq | CmpOp::Is]) => {
+        }
+        _ => return None,
+    }
+    let mut tests = Vec::new();
+    collect_direct_tests(expression, source, target_version, &mut tests);
+    tests.into_iter().next().map(|(_, test)| test)
 }
 
 fn comparison_fact(operator: CmpOp) -> Option<ComparisonFact> {

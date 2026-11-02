@@ -71,6 +71,29 @@ impl Default for Dm002Config {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Ct003Mode {
+    #[default]
+    Dispatch,
+    Strict,
+}
+
+impl Display for Ct003Mode {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Dispatch => "dispatch",
+            Self::Strict => "strict",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ct003Config {
+    pub mode: Ct003Mode,
+}
+
 #[derive(Clone, Debug)]
 pub struct PerFileIgnore {
     pub pattern: String,
@@ -90,6 +113,7 @@ pub struct Config {
     pub target_version: TargetVersion,
     pub exclude: Vec<String>,
     pub dm002: Dm002Config,
+    pub ct003: Ct003Config,
     pub per_file_ignores: Vec<PerFileIgnore>,
 }
 
@@ -103,6 +127,7 @@ impl Default for Config {
             target_version: TargetVersion::default(),
             exclude: Vec::new(),
             dm002: Dm002Config::default(),
+            ct003: Ct003Config::default(),
             per_file_ignores: Vec::new(),
         }
     }
@@ -138,6 +163,9 @@ impl Config {
             "min-nullable-ratio = {}",
             self.dm002.min_nullable_ratio
         )?;
+        writeln!(output)?;
+        writeln!(output, "[rules.CT003]")?;
+        writeln!(output, "mode = \"{}\"", self.ct003.mode)?;
         for entry in &self.per_file_ignores {
             writeln!(output)?;
             writeln!(output, "[[per-file-ignores]]")?;
@@ -192,10 +220,11 @@ impl Config {
             validate_pattern("exclude", pattern)?;
         }
 
-        let dm002 = raw
-            .rules
-            .and_then(|rules| rules.dm002)
+        let rules = raw.rules.unwrap_or_default();
+        let dm002 = rules
+            .dm002
             .map_or_else(|| Ok(Dm002Config::default()), Dm002Config::from_raw)?;
+        let ct003 = rules.ct003.unwrap_or_default();
         let per_file_ignores = raw
             .per_file_ignores
             .unwrap_or_default()
@@ -212,6 +241,7 @@ impl Config {
             target_version,
             exclude,
             dm002,
+            ct003,
             per_file_ignores,
         })
     }
@@ -382,6 +412,8 @@ struct RawConfig {
 struct RawRules {
     #[serde(rename = "DM002")]
     dm002: Option<RawDm002Config>,
+    #[serde(rename = "CT003")]
+    ct003: Option<Ct003Config>,
 }
 
 #[derive(Debug, Deserialize, Default)]

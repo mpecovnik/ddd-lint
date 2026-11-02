@@ -103,7 +103,7 @@ fn config_reports_zero_selected_rules() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n"
+        "select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n\n[rules.CT003]\nmode = \"dispatch\"\n"
     );
 }
 
@@ -288,7 +288,7 @@ fn resolved_config_expands_selectors_and_prints_rule_and_exception_settings() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(
         &directory.path().join("pyproject.toml"),
-        "[tool.ddd-lint]\nselect = [\"DM\", \"DI001\"]\nignore = [\"DM003\"]\n[tool.ddd-lint.rules.DM002]\nmin-nullable-fields = 4\nmin-nullable-ratio = 0.5\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"tests/**\"\nrules = [\"DM001\"]\nreason = \"External payload fixture\"\n",
+        "[tool.ddd-lint]\nselect = [\"DM\", \"DI001\"]\nignore = [\"DM003\"]\n[tool.ddd-lint.rules.DM002]\nmin-nullable-fields = 4\nmin-nullable-ratio = 0.5\n[tool.ddd-lint.rules.CT003]\nmode = \"strict\"\n[[tool.ddd-lint.per-file-ignores]]\npattern = \"tests/**\"\nrules = [\"DM001\"]\nreason = \"External payload fixture\"\n",
     );
 
     let output = ddd_lint()
@@ -304,6 +304,10 @@ fn resolved_config_expands_selectors_and_prints_rule_and_exception_settings() {
     );
     assert!(rendered.contains("min-nullable-fields = 4"), "{rendered}");
     assert!(rendered.contains("min-nullable-ratio = 0.5"), "{rendered}");
+    assert!(
+        rendered.contains("[rules.CT003]\nmode = \"strict\""),
+        "{rendered}"
+    );
     assert!(rendered.contains("pattern = \"tests/**\""), "{rendered}");
     assert!(
         rendered.contains("reason = \"External payload fixture\""),
@@ -319,6 +323,9 @@ fn configurable_rule_prints_registered_defaults() {
         stdout(&output)
             .contains("Configuration:\n  min-nullable-fields = 3\n  min-nullable-ratio = 0.30\n")
     );
+    let output = run(&["rule", "CT003"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("Configuration:\n  mode = \"dispatch\"\n"));
 }
 
 #[test]
@@ -724,11 +731,11 @@ fn ct001_handles_or_as_guards_literals_enums_and_none() {
 }
 
 #[test]
-fn ct003_recognizes_documented_direct_tests_but_skips_out_of_scope_forms() {
+fn ct003_strict_recognizes_documented_direct_tests_but_skips_out_of_scope_forms() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(
         &directory.path().join("pyproject.toml"),
-        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n[tool.ddd-lint.rules.CT003]\nmode = \"strict\"\n",
     );
     write(
         &directory.path().join("model.py"),
@@ -832,7 +839,7 @@ fn ct003_skips_module_shadowed_builtins() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(
         &directory.path().join("pyproject.toml"),
-        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n[tool.ddd-lint.rules.CT003]\nmode = \"strict\"\n",
     );
     write(
         &directory.path().join("model.py"),
@@ -853,7 +860,7 @@ fn ct003_skips_function_and_enclosing_scope_shadowed_builtins() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(
         &directory.path().join("pyproject.toml"),
-        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n[tool.ddd-lint.rules.CT003]\nmode = \"strict\"\n",
     );
     write(
         &directory.path().join("model.py"),
@@ -874,7 +881,7 @@ fn ct003_does_not_treat_global_declarations_as_local_shadowing() {
     let directory = tempfile::tempdir().expect("temporary directory");
     write(
         &directory.path().join("pyproject.toml"),
-        "[tool.ddd-lint]\nselect = [\"CT003\"]\n",
+        "[tool.ddd-lint]\nselect = [\"CT003\"]\n[tool.ddd-lint.rules.CT003]\nmode = \"strict\"\n",
     );
     write(
         &directory.path().join("model.py"),
@@ -899,7 +906,7 @@ fn ct_rules_index_definitions_inside_module_and_class_suites() {
     );
     write(
         &directory.path().join("model.py"),
-        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nif enabled:\n    def dispatch(document: Document):\n        if isinstance(document, Draft):\n            return 1\nclass Adapter:\n    if enabled:\n        def label(self, document: Document):\n            match document:\n                case Draft(): return 1\n",
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nif enabled:\n    def dispatch(document: Document):\n        if isinstance(document, Draft):\n            return 1\n        elif isinstance(document, Published):\n            return 2\nclass Adapter:\n    if enabled:\n        def label(self, document: Document):\n            match document:\n                case Draft(): return 1\n",
     );
 
     let output = ddd_lint()
@@ -922,7 +929,7 @@ fn ct_rules_analyze_async_functions() {
     );
     write(
         &directory.path().join("model.py"),
-        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nasync def label(document: Document):\n    if isinstance(document, Draft):\n        return 1\n    match document:\n        case Draft(): return 1\n",
+        "class Draft: pass\nclass Published: pass\nDocument = Draft | Published\nasync def label(document: Document):\n    if isinstance(document, Draft):\n        return 1\n    if isinstance(document, Published):\n        return 2\n    match document:\n        case Draft(): return 1\n",
     );
 
     let output = ddd_lint()

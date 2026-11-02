@@ -18,7 +18,7 @@ Pydantic model rules inspect `BaseModel` subclasses but exclude `RootModel` and 
 | --- | --- | --- |
 | [`CT001`](ct001-non-exhaustive-match.md) | `non-exhaustive-match` | Require explicit coverage of every closed-type member. |
 | [`CT002`](ct002-catch-all-on-closed-type.md) | `catch-all-on-closed-type` | Reject wildcard or capture fallbacks on closed types. |
-| [`CT003`](ct003-conditional-closed-type-dispatch.md) | `conditional-closed-type-dispatch` | Replace conditional member dispatch with pattern matching. |
+| [`CT003`](ct003-conditional-closed-type-dispatch.md) | `conditional-closed-type-dispatch` | Replace multi-member conditional dispatch with pattern matching; optionally enforce strict member-test policy. |
 | [`CT004`](ct004-discriminator-match.md) | `discriminator-match` | Match a class union by member class, not discriminator value. |
 
 ## Dependency Injection
@@ -42,11 +42,18 @@ Practical onboarding:
 select = ["DM002", "CT", "DI001"]
 ```
 
-Strict model construction:
+Onboarding uses CT003's default `dispatch` mode: multi-branch variant dispatch is reported, while single predicates and type guards remain allowed.
+
+Strict model construction and conditional-member policy:
 
 ```toml
 [tool.ddd-lint]
 select = ["DM001", "DM002", "DM003", "CT", "DI001", "SUP001"]
+
+[tool.ddd-lint.rules.CT003]
+mode = "strict"
 ```
 
 Family selectors include future rules added to that family. Select exact codes when upgrades must not expand policy automatically.
+
+CT003 previously applied strict behavior whenever selected. Set `mode = "strict"` to retain that policy; `CT` and `ALL` now use `dispatch` unless configured otherwise.

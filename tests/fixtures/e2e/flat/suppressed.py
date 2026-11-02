@@ -22,7 +22,8 @@ def suppressed_catch_all(document: Document) -> str:
 def suppressed_conditional(document: Document) -> str:
     if isinstance(document, Draft):
         return "draft"
-    return "published"
+    elif isinstance(document, Published):
+        return "published"
 
 
 # ddd-lint: ignore[CT004] - serialized protocol dispatches on its stable tag

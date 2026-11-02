@@ -20,7 +20,8 @@ def catch_all(document: Document) -> str:
 def conditional(document: Document) -> str:
     if isinstance(document, Draft):
         return "draft"
-    return "published"
+    elif isinstance(document, Published):
+        return "published"
 
 
 def by_discriminator(document: Document) -> str:

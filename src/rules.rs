@@ -32,6 +32,10 @@ pub struct RuleConfigField {
 }
 
 const NO_CONFIGURATION: &[RuleConfigField] = &[];
+const CT003_CONFIGURATION: &[RuleConfigField] = &[RuleConfigField {
+    name: "mode",
+    default: "\"dispatch\"",
+}];
 const DM002_CONFIGURATION: &[RuleConfigField] = &[
     RuleConfigField {
         name: "min-nullable-fields",
@@ -93,7 +97,7 @@ pub const RULES: &[RuleSummary] = &[
         name: "conditional-closed-type-dispatch",
         family: CLOSED_TYPE,
         documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct003-conditional-closed-type-dispatch.md",
-        configuration: NO_CONFIGURATION,
+        configuration: CT003_CONFIGURATION,
     },
     RuleSummary {
         code: "CT004",

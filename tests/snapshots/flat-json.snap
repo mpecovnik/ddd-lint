@@ -54,7 +54,7 @@ stdout:
         "column": 35
       }
     },
-    "message": "conditional selects a member of a closed type",
+    "message": "conditional dispatch selects multiple members of the same closed type",
     "remediation": "use an exhaustive match statement for closed-type dispatch",
     "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct003-conditional-closed-type-dispatch.md"
   },
@@ -65,11 +65,11 @@ stdout:
     "path": "handlers.py",
     "range": {
       "start": {
-        "line": 27,
+        "line": 28,
         "column": 11
       },
       "end": {
-        "line": 27,
+        "line": 28,
         "column": 24
       }
     },
@@ -84,11 +84,11 @@ stdout:
     "path": "handlers.py",
     "range": {
       "start": {
-        "line": 36,
+        "line": 37,
         "column": 5
       },
       "end": {
-        "line": 38,
+        "line": 39,
         "column": 27
       }
     },
@@ -103,11 +103,11 @@ stdout:
     "path": "handlers.py",
     "range": {
       "start": {
-        "line": 42,
+        "line": 43,
         "column": 5
       },
       "end": {
-        "line": 44,
+        "line": 45,
         "column": 27
       }
     },
@@ -198,11 +198,11 @@ stdout:
     "path": "suppressed.py",
     "range": {
       "start": {
-        "line": 37,
+        "line": 38,
         "column": 12
       },
       "end": {
-        "line": 37,
+        "line": 38,
         "column": 64
       }
     },

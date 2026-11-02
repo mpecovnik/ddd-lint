@@ -180,7 +180,11 @@ fn check(
         .expect("syntax errors were checked before rule execution");
 
     // Keeping rule execution below the syntax/directive guard prevents partial analysis.
-    let mut rule_diagnostics = ct::run(&graph, &project.config().enabled_rules);
+    let mut rule_diagnostics = ct::run(
+        &graph,
+        &project.config().enabled_rules,
+        &project.config().ct003,
+    );
     rule_diagnostics.extend(di::run(&graph, &project.config().enabled_rules));
     rule_diagnostics.extend(dm::run(
         &graph,
@@ -299,7 +303,7 @@ mod tests {
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(
             output,
-            b"select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n"
+            b"select = []\nignore = []\nenabled-rules = []\nsrc = [\".\", \"src\"]\ntarget-version = \"py310\"\nexclude = []\n\n[rules.DM002]\nmin-nullable-fields = 3\nmin-nullable-ratio = 0.3\n\n[rules.CT003]\nmode = \"dispatch\"\n"
         );
     }
 }
