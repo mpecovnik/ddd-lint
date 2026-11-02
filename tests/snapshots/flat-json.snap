@@ -150,7 +150,7 @@ stdout:
       }
     },
     "message": "model has 3 nullable fields out of 4 declared fields",
-    "remediation": "split nullable state combinations into explicit model variants",
+    "remediation": "review whether nullable fields encode correlated states; independent absence may be intentional",
     "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm002-nullable-heavy-model.md"
   },
   {

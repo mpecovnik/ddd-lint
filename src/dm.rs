@@ -48,7 +48,7 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode], dm002: &Dm002Config) -> V
                     nullable.len(),
                     fields.len()
                 ),
-                "split nullable state combinations into explicit model variants",
+                "review whether nullable fields encode correlated states; independent absence may be intentional",
             ));
         }
         if selected.contains("DM003") {
