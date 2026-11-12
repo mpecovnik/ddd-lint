@@ -56,6 +56,17 @@ pub struct FieldInfo {
     pub range: ByteRange,
     pub annotation: ResolvedType,
     pub defaulted: bool,
+    pub default_kind: DefaultKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DefaultKind {
+    Required,
+    LiteralTag,
+    Absence,
+    Initial,
+    Choice,
+    Factory,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +101,7 @@ pub enum ResolvedType {
     Named(String),
     Union(Vec<Self>),
     Literal(Vec<LiteralValue>),
+    SingletonEnumLiteral(String),
     Applied {
         origin: String,
         arguments: Vec<Self>,
@@ -359,6 +371,132 @@ impl ProjectGraph {
                 .iter()
                 .map(move |site| (module.as_str(), site))
         })
+    }
+
+    pub fn immutable_fallback(&self, fallback: &ConstructorFallbackFact) -> bool {
+        let Some(callee) = &fallback.callee else {
+            return false;
+        };
+        let Some(file) = self.files.iter().find(|file| file.path == fallback.path) else {
+            return false;
+        };
+        let Some(module) = &file.module else {
+            return false;
+        };
+        let root = callee.split('.').next().unwrap_or(callee);
+        if self.diagnostic_functions.iter().any(|function| {
+            function.path == fallback.path
+                && function.range.start() <= fallback.range.start()
+                && function.range.end() >= fallback.range.end()
+                && (function.bound_names.contains(root)
+                    || function
+                        .parameters
+                        .iter()
+                        .any(|parameter| parameter.name == root))
+        }) {
+            return false;
+        }
+        let resolver = Resolver::new(&self.modules);
+        let mut parts = callee.split('.');
+        let mut expression = SemanticExpr::Name(parts.next().unwrap().to_owned());
+        for name in parts {
+            expression = SemanticExpr::Attribute {
+                value: Box::new(expression),
+                name: name.to_owned(),
+            };
+        }
+        let Some(symbol) = resolver.canonical_symbol(module, &expression, &mut BTreeSet::new())
+        else {
+            return false;
+        };
+        if symbol == "builtins.frozenset" && fallback.empty_call {
+            return true;
+        }
+        if matches!(
+            symbol.as_str(),
+            "builtins.str" | "builtins.bytes" | "builtins.int" | "builtins.float" | "builtins.bool"
+        ) {
+            return true;
+        }
+        self.modules.values().any(|raw| raw.facts.classes.iter().any(|class| {
+            if format!("{}.{}", raw.name, class.name) != symbol { return false; }
+            let scalar_root = class.bases.iter().any(|base| {
+                let SemanticExpr::Subscript { value, arguments } = base else { return false; };
+                resolver.canonical_symbol(&raw.name, value, &mut BTreeSet::new()).as_deref() == Some("pydantic.RootModel")
+                    && arguments.len() == 1
+                    && matches!(resolver.resolve_type(&raw.name, &arguments[0], &mut BTreeSet::new()), ResolvedType::Named(ref name) if matches!(name.as_str(), "builtins.int" | "builtins.str" | "builtins.bytes" | "builtins.float" | "builtins.bool"))
+            });
+            let frozen = class.members.iter().chain(class.fields.iter()).any(|member| {
+                member.name == "model_config" && matches!(&member.value, Some(SemanticExpr::Call { function, keywords, .. })
+                    if resolver.canonical_symbol(&raw.name, function, &mut BTreeSet::new()).as_deref() == Some("pydantic.ConfigDict")
+                    && keywords.iter().any(|(key, value)| key.as_deref() == Some("frozen") && *value == SemanticExpr::Boolean(true)))
+            });
+            scalar_root && (frozen || class.frozen_keyword) && class.bases.len() == 1 && class.fields.iter().all(|field| field.name == "model_config" || (field.name == "root" && field.annotation.as_ref().is_some_and(|annotation| matches!(resolver.resolve_type(&raw.name, annotation, &mut BTreeSet::new()), ResolvedType::Named(ref name) if matches!(name.as_str(), "builtins.int" | "builtins.str" | "builtins.bytes" | "builtins.float" | "builtins.bool")))))
+                && class.methods.is_empty()
+                && class.members.iter().all(|member| matches!(member.name.as_str(), "root" | "model_config"))
+        }))
+    }
+
+    pub fn mutable_builtin_fallback(&self, fallback: &ConstructorFallbackFact) -> bool {
+        let Some(callee) = &fallback.callee else {
+            return false;
+        };
+        let root = callee.split('.').next().unwrap();
+        if self.diagnostic_functions.iter().any(|function| {
+            function.path == fallback.path
+                && function.range.start() <= fallback.range.start()
+                && function.range.end() >= fallback.range.end()
+                && (function.bound_names.contains(root)
+                    || function
+                        .parameters
+                        .iter()
+                        .any(|parameter| parameter.name == root))
+        }) {
+            return false;
+        }
+        let Some(module) = self
+            .files
+            .iter()
+            .find(|file| file.path == fallback.path)
+            .and_then(|file| file.module.as_deref())
+        else {
+            return false;
+        };
+        let mut parts = callee.split('.');
+        let mut expression = SemanticExpr::Name(parts.next().unwrap().to_owned());
+        for name in parts {
+            expression = SemanticExpr::Attribute {
+                value: Box::new(expression),
+                name: name.to_owned(),
+            };
+        }
+        Resolver::new(&self.modules)
+            .canonical_symbol(module, &expression, &mut BTreeSet::new())
+            .is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "builtins.list" | "builtins.dict" | "builtins.set"
+                )
+            })
+    }
+
+    pub fn relationships(&self, class: &ClassInfo) -> Vec<&crate::python::RelationshipFact> {
+        let Some(raw) = self.modules.get(&class.module) else {
+            return Vec::new();
+        };
+        let Some(fact) = raw
+            .facts
+            .classes
+            .iter()
+            .find(|fact| fact.name == class.name)
+        else {
+            return Vec::new();
+        };
+        let resolver = Resolver::new(&self.modules);
+        fact.relationships.iter().filter(|relationship| fact.methods.iter().any(|method| method.name == relationship.method
+            && method.decorators.iter().any(|decorator| matches!(decorator, SemanticExpr::Call { function, keywords, .. }
+                if resolver.canonical_symbol(&class.module, function, &mut BTreeSet::new()).as_deref() == Some("pydantic.model_validator")
+                && keywords.iter().any(|(key, value)| key.as_deref() == Some("mode") && *value == SemanticExpr::String("after".to_owned())))))).collect()
     }
 
     pub fn constructor_fallbacks(&self) -> impl Iterator<Item = &ConstructorFallbackFact> {
@@ -924,6 +1062,11 @@ impl<'a> Resolver<'a> {
                         ])
                     }),
                     "typing.Literal" => {
+                        if arguments.len() == 1
+                            && let Some(member) = self.enum_literal_member(module, &arguments[0])
+                        {
+                            return ResolvedType::SingletonEnumLiteral(member);
+                        }
                         let values = arguments
                             .iter()
                             .filter_map(literal_value)
@@ -1226,6 +1369,61 @@ impl<'a> Resolver<'a> {
             .find(|field| field.name == name)
             .map(|field| (module, field))
     }
+
+    fn enum_literal_member(&self, module: &str, expression: &SemanticExpr) -> Option<String> {
+        let symbol = self.canonical_symbol(module, expression, &mut BTreeSet::new())?;
+        let symbol = self
+            .resolve_export(&symbol, &mut BTreeSet::new())
+            .unwrap_or(symbol);
+        let (class, member) = symbol.rsplit_once('.')?;
+        let class = self
+            .resolve_export(class, &mut BTreeSet::new())
+            .unwrap_or_else(|| class.to_owned());
+        let (module, local) = split_qualified_class(&class, self.modules)?;
+        let fact = find_class_fact(&self.modules.get(module)?.facts.classes, local)?;
+        if member.starts_with('_')
+            || !fact
+                .members
+                .iter()
+                .any(|field| field.name == member && field.value.is_some())
+            || !self.is_enum_class(&class, &mut BTreeSet::new())
+        {
+            return None;
+        }
+        Some(format!("{class}.{member}"))
+    }
+
+    fn is_enum_class(&self, class: &str, visiting: &mut BTreeSet<String>) -> bool {
+        if matches!(
+            class,
+            "enum.Enum" | "enum.IntEnum" | "enum.StrEnum" | "enum.Flag" | "enum.IntFlag"
+        ) {
+            return true;
+        }
+        if !visiting.insert(class.to_owned()) {
+            return false;
+        }
+        let result = split_qualified_class(class, self.modules)
+            .and_then(|(module, local)| {
+                Some((
+                    module,
+                    find_class_fact(&self.modules.get(module)?.facts.classes, local)?,
+                ))
+            })
+            .is_some_and(|(module, fact)| {
+                fact.bases.iter().any(|base| {
+                    self.canonical_base(module, base, &mut BTreeSet::new())
+                        .is_some_and(|base| {
+                            let base = self
+                                .resolve_export(&base, &mut BTreeSet::new())
+                                .unwrap_or(base);
+                            self.is_enum_class(&base, visiting)
+                        })
+                })
+            });
+        visiting.remove(class);
+        result
+    }
 }
 
 fn index_class(
@@ -1383,8 +1581,77 @@ fn resolve_field(resolver: &Resolver<'_>, module: &str, field: &AssignmentFact) 
         name: field.name.clone(),
         path: field.path.clone(),
         range: field.range,
+        default_kind: classify_default(resolver, module, field, &annotation, defaulted),
         annotation,
         defaulted,
+    }
+}
+
+fn classify_default(
+    resolver: &Resolver<'_>,
+    module: &str,
+    field: &AssignmentFact,
+    annotation: &ResolvedType,
+    defaulted: bool,
+) -> DefaultKind {
+    if !defaulted {
+        return DefaultKind::Required;
+    }
+    let mut value = field.value.as_ref();
+    if value.is_none()
+        && let Some(SemanticExpr::Subscript { arguments, .. }) = &field.annotation
+    {
+        value = arguments
+            .iter()
+            .skip(1)
+            .find(|value| matches!(value, SemanticExpr::Call { function, .. }
+                if resolver.canonical_symbol(module, function, &mut BTreeSet::new()).as_deref() == Some("pydantic.Field"))
+                && field_value_is_defaulted(resolver, module, value));
+    }
+    if let Some(SemanticExpr::Call {
+        function,
+        arguments,
+        keywords,
+    }) = value
+        && resolver
+            .canonical_symbol(module, function, &mut BTreeSet::new())
+            .as_deref()
+            == Some("pydantic.Field")
+    {
+        if keywords
+            .iter()
+            .any(|(name, _)| name.as_deref() == Some("default_factory"))
+        {
+            return DefaultKind::Factory;
+        }
+        value = keywords
+            .iter()
+            .find(|(name, _)| name.as_deref() == Some("default"))
+            .map(|(_, value)| value)
+            .or_else(|| arguments.first());
+    }
+    if let (ResolvedType::Literal(values), Some(value)) = (annotation, value)
+        && values.len() == 1
+        && literal_value(value)
+            .is_some_and(|value| values[0] == value || typing_equal(&values[0], &value))
+    {
+        return DefaultKind::LiteralTag;
+    }
+    if let (ResolvedType::SingletonEnumLiteral(member), Some(value)) = (annotation, value)
+        && resolver.enum_literal_member(module, value).as_ref() == Some(member)
+    {
+        return DefaultKind::LiteralTag;
+    }
+    match value {
+        Some(SemanticExpr::EmptyCollection) => DefaultKind::Initial,
+        Some(SemanticExpr::None) => DefaultKind::Absence,
+        Some(SemanticExpr::Call { .. }) => DefaultKind::Factory,
+        Some(SemanticExpr::List(values) | SemanticExpr::Tuple(values)) if values.is_empty() => {
+            DefaultKind::Initial
+        }
+        Some(SemanticExpr::Number(value)) if numeric_equal(value, "0") => DefaultKind::Initial,
+        Some(SemanticExpr::Boolean(false)) => DefaultKind::Initial,
+        _ => DefaultKind::Choice,
     }
 }
 
@@ -1665,7 +1932,7 @@ fn import_binds(import: &ImportFact, name: &str) -> bool {
 fn builtin_name(name: &str) -> Option<String> {
     match name {
         "object" | "str" | "bytes" | "int" | "float" | "bool" | "list" | "dict" | "set"
-        | "tuple" | "type" => Some(format!("builtins.{name}")),
+        | "tuple" | "type" | "frozenset" => Some(format!("builtins.{name}")),
         _ => None,
     }
 }

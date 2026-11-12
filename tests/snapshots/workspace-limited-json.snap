@@ -18,7 +18,13 @@ stdout:
     },
     "message": "match omits closed members: domain.events.Closed",
     "remediation": "add an unguarded explicit case for every closed member",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   }
 ]
 stderr:

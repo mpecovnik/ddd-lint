@@ -90,9 +90,15 @@ fn execute_from(
         Command::Check {
             paths,
             output_format,
+            profile,
+            raw,
         } => check(
-            paths,
-            output_format,
+            CheckOptions {
+                paths,
+                output_format,
+                profile,
+                raw,
+            },
             current_dir,
             config_path,
             output,
@@ -103,14 +109,26 @@ fn execute_from(
     }
 }
 
-fn check(
+struct CheckOptions {
     paths: Vec<PathBuf>,
     output_format: OutputFormat,
+    profile: Option<config::Profile>,
+    raw: bool,
+}
+
+fn check(
+    options: CheckOptions,
     current_dir: &Path,
     config_path: Option<&Path>,
     output: &mut dyn Write,
     styled: bool,
 ) -> Result<ExitStatus, CliError> {
+    let CheckOptions {
+        paths,
+        output_format,
+        profile,
+        raw,
+    } = options;
     if paths.is_empty() {
         ensure_path_exists(current_dir)?;
     } else {
@@ -180,33 +198,38 @@ fn check(
         .expect("syntax errors were checked before rule execution");
 
     // Keeping rule execution below the syntax/directive guard prevents partial analysis.
-    let mut rule_diagnostics = ct::run(
-        &graph,
-        &project.config().enabled_rules,
-        &project.config().ct003,
+    let enabled = profile.map_or_else(
+        || project.config().enabled_rules.clone(),
+        |profile| profile.rules(&project.config().ignore),
     );
-    rule_diagnostics.extend(di::run(&graph, &project.config().enabled_rules));
-    rule_diagnostics.extend(dm::run(
-        &graph,
-        &project.config().enabled_rules,
-        &project.config().dm002,
-    ));
+    let mut rule_diagnostics = ct::run(&graph, &enabled, &project.config().ct003);
+    rule_diagnostics.extend(di::run(&graph, &enabled));
+    rule_diagnostics.extend(dm::run(&graph, &enabled, &project.config().dm002));
     let diagnostics = exceptions.apply_with_hygiene(
         rule_diagnostics,
         project.root(),
-        &project.config().enabled_rules,
+        &enabled,
         &analyzed_files,
         project.config_path(),
     );
+    let diagnostics = if raw {
+        diagnostics
+    } else {
+        diagnostics.deduplicated()
+    };
     match output_format {
-        OutputFormat::Human => {
-            diagnostics.write_human_styled(output, project.root(), &sources, styled)
-        }
+        OutputFormat::Human => diagnostics
+            .write_human_styled(output, project.root(), &sources, styled)
+            .and_then(|()| diagnostics.write_summary(output)),
         OutputFormat::Json => diagnostics.write_json(output, project.root(), &sources),
     }
     .map_err(|_| CliError::WriteOutput)?;
     Ok(ExitStatus::from_diagnostic_count(
-        diagnostics.as_slice().len(),
+        diagnostics
+            .as_slice()
+            .iter()
+            .filter(|diagnostic| !diagnostic.is_review())
+            .count(),
     ))
 }
 
@@ -274,6 +297,8 @@ mod tests {
             verbose: 0,
             config: None,
             command: Command::Check {
+                profile: None,
+                raw: false,
                 output_format: OutputFormat::Human,
                 paths: vec![PathBuf::from("path-that-cannot-exist")],
             },

@@ -14,6 +14,42 @@ use crate::rules::{RULES, RuleCode};
 const DEFAULT_MIN_NULLABLE_FIELDS: usize = 3;
 const DEFAULT_MIN_NULLABLE_RATIO: f64 = 0.30;
 
+#[derive(Clone, Copy, Debug, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum Profile {
+    Recommended,
+    Review,
+    StrictConstruction,
+}
+
+impl Profile {
+    pub fn selectors(self) -> &'static [&'static str] {
+        match self {
+            Self::Recommended => &["DM004", "DM008", "DM009", "DM010", "CT", "DI001"],
+            Self::Review => &[
+                "DM002", "DM004", "DM007", "DM008", "DM009", "DM010", "DM011", "CT", "DI001",
+            ],
+            Self::StrictConstruction => &[
+                "DM001", "DM003", "DM004", "DM008", "DM009", "DM010", "CT", "DI001",
+            ],
+        }
+    }
+    pub fn rules(self, ignore: &[String]) -> Vec<RuleCode> {
+        RULES
+            .iter()
+            .filter(|rule| {
+                self.selectors()
+                    .iter()
+                    .any(|selector| selector_matches(selector, rule))
+                    && !ignore
+                        .iter()
+                        .any(|selector| selector_matches(selector, rule))
+            })
+            .map(|rule| RuleCode::from_str(rule.code).unwrap())
+            .collect()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TargetVersion {
     #[default]
@@ -182,7 +218,15 @@ impl Config {
     }
 
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
-        let select = raw.select.unwrap_or_default();
+        let select = raw.select.unwrap_or_else(|| {
+            raw.profile.map_or_else(Vec::new, |profile| {
+                profile
+                    .selectors()
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect()
+            })
+        });
         let ignore = raw.ignore.unwrap_or_default();
         validate_selectors("select", &select)?;
         validate_selectors("ignore", &ignore)?;
@@ -398,6 +442,7 @@ struct RawTool {
 #[derive(Debug, Deserialize, Default)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 struct RawConfig {
+    profile: Option<Profile>,
     select: Option<Vec<String>>,
     ignore: Option<Vec<String>>,
     src: Option<Vec<String>>,
@@ -573,7 +618,13 @@ mod tests {
             .map(|code| code.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(enabled, ["DM001", "DM003", "DM004", "DI001", "SUP001"]);
+        assert_eq!(
+            enabled,
+            [
+                "DI002", "DM005", "DM006", "DM007", "DM008", "DM009", "DM010", "DM011", "DM001",
+                "DM003", "DM004", "DI001", "SUP001"
+            ]
+        );
     }
 
     #[test]

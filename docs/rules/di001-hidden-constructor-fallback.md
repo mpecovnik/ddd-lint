@@ -1,5 +1,7 @@
 # DI001: Hidden Constructor Fallback
 
+Resolved immutable value constructors are excluded: scalar builtins, empty `frozenset()`, and directly declared frozen scalar RootModel wrappers with no extra state or methods. Recognized mutable builtin collection allocations are separate from collaborator selection; opt-in DI002 checks shared constructor defaults. See [detection boundaries](defaults-and-relationships.md).
+
 Rule name: `hidden-constructor-fallback`
 
 Origin: dependency-injection and composition proxy; DDD-adjacent.

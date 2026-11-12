@@ -12,7 +12,7 @@ fn check(source: &str, config: &str) -> Output {
     fs::write(directory.path().join("pyproject.toml"), config).expect("configuration");
     Command::new(env!("CARGO_BIN_EXE_ddd-lint"))
         .current_dir(directory.path())
-        .args(["check", "models.py", "--output-format", "json"])
+        .args(["check", "models.py", "--output-format", "json", "--raw"])
         .output()
         .expect("ddd-lint should run")
 }

@@ -58,6 +58,62 @@ pub struct RuleSummary {
 
 pub const RULES: &[RuleSummary] = &[
     RuleSummary {
+        code: "DI002",
+        name: "shared-mutable-constructor-default",
+        family: DEPENDENCY_INJECTION,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM005",
+        name: "absence-default",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM006",
+        name: "initial-state-default",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM007",
+        name: "generated-default",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM008",
+        name: "all-or-none-fields",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM009",
+        name: "exactly-one-fields",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM010",
+        name: "state-dependent-payload",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
+        code: "DM011",
+        name: "implicit-default-choice",
+        family: DOMAIN_MODEL,
+        documentation: "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/defaults-and-relationships.md",
+        configuration: NO_CONFIGURATION,
+    },
+    RuleSummary {
         code: "DM001",
         name: "nullable-model-field",
         family: DOMAIN_MODEL,

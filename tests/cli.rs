@@ -58,7 +58,7 @@ fn check_defaults_to_current_directory_and_no_rules() {
         .expect("ddd-lint should run");
 
     assert!(output.status.success(), "{}", stderr(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
     assert!(output.stderr.is_empty());
 }
 
@@ -242,7 +242,7 @@ fn valid_source_directives_stay_clean_with_zero_rules() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -259,7 +259,7 @@ fn malformed_stub_directives_are_excluded() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn resolved_config_expands_selectors_and_prints_rule_and_exception_settings() {
     assert!(output.status.success(), "{}", stderr(&output));
     let rendered = stdout(&output);
     assert!(
-        rendered.contains("enabled-rules = [\"DM001\", \"DM002\", \"DM004\", \"DI001\"]"),
+        rendered.contains("enabled-rules = [\"DM005\", \"DM006\", \"DM007\", \"DM008\", \"DM009\", \"DM010\", \"DM011\", \"DM001\", \"DM002\", \"DM004\", \"DI001\"]"),
         "{rendered}"
     );
     assert!(rendered.contains("min-nullable-fields = 4"), "{rendered}");
@@ -440,7 +440,7 @@ fn ct002_allows_assert_never_capture_for_exhaustiveness() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -461,7 +461,7 @@ fn ct002_resolves_assert_never_and_rejects_guarded_or_local_impostors() {
         .expect("ddd-lint should run");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        stdout(&output).matches("CT002").count(),
+        stdout(&output).matches(": CT002 ").count(),
         2,
         "{}",
         stdout(&output)
@@ -539,7 +539,7 @@ def union_attribute(envelope: Envelope):
             stdout(&output),
             stderr(&output)
         );
-        assert!(output.stdout.is_empty());
+        assert_eq!(stdout(&output), "No findings.\n");
     }
 }
 
@@ -579,7 +579,7 @@ def union_label(document: Document):
         .output()
         .expect("ddd-lint should run");
     assert!(before.status.success(), "{}", stdout(&before));
-    assert!(before.stdout.is_empty());
+    assert_eq!(stdout(&before), "No findings.\n");
 
     let extended = source
         .replace(
@@ -598,7 +598,7 @@ def union_label(document: Document):
         .expect("ddd-lint should run");
     let findings = stdout(&after);
     assert_eq!(after.status.code(), Some(1), "{findings}");
-    assert_eq!(findings.matches("CT001").count(), 2, "{findings}");
+    assert_eq!(findings.matches(": CT001 ").count(), 2, "{findings}");
     assert!(findings.contains("model.Status.ARCHIVED"), "{findings}");
     assert!(findings.contains("model.Archived"), "{findings}");
     assert!(!findings.contains("CT002"), "{findings}");
@@ -806,7 +806,7 @@ fn ct_findings_respect_source_and_per_file_design_exceptions() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -852,7 +852,7 @@ fn ct003_skips_module_shadowed_builtins() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -873,7 +873,7 @@ fn ct003_skips_function_and_enclosing_scope_shadowed_builtins() {
         .output()
         .expect("ddd-lint should run");
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -999,7 +999,7 @@ fn dm002_requires_both_configured_gates_and_dm_suppressions_are_exact() {
         .expect("ddd-lint should run");
     assert_eq!(output.status.code(), Some(1));
     let findings = stdout(&output);
-    assert_eq!(findings.matches("DM001").count(), 1, "{findings}");
+    assert_eq!(findings.matches(": DM001 ").count(), 1, "{findings}");
     assert!(!findings.contains("DM002"), "{findings}");
 }
 
@@ -1025,8 +1025,8 @@ fn dm_rules_resolve_cross_file_model_aliases_and_documented_field_forms() {
         .expect("ddd-lint should run");
     assert_eq!(output.status.code(), Some(1));
     let findings = stdout(&output);
-    assert_eq!(findings.matches("DM001").count(), 1, "{findings}");
-    assert_eq!(findings.matches("DM003").count(), 1, "{findings}");
+    assert_eq!(findings.matches(": DM001 ").count(), 1, "{findings}");
+    assert_eq!(findings.matches(": DM003 ").count(), 1, "{findings}");
     assert!(!findings.contains("inherited`"), "{findings}");
     assert!(!findings.contains("label`"), "{findings}");
 }
@@ -1088,7 +1088,7 @@ fn di001_is_limited_to_init_and_accepts_explicit_injection_and_plain_defaults() 
         .expect("ddd-lint should run");
 
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]
@@ -1278,7 +1278,7 @@ fn project_ignore_disables_sup001_without_invalidating_other_exceptions() {
         .expect("ddd-lint should run");
 
     assert!(output.status.success(), "{}", stdout(&output));
-    assert!(output.stdout.is_empty());
+    assert_eq!(stdout(&output), "No findings.\n");
 }
 
 #[test]

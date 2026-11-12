@@ -4,7 +4,7 @@ DDD Lint is a planned Rust-based Python linter for opinionated domain-driven des
 
 It identifies syntax and type structures that deserve domain-model review without claiming to prove that a model is wrong. Rules are individually selectable, grouped into families, and suppressible through narrow design exceptions that require written reasons.
 
-> Status: v1 behavior and architecture are specified, and the CLI/package scaffold is implemented. Rule analysis is not implemented and the package is not published yet.
+> Status: CLI and rule analysis are implemented. The package is not published yet.
 
 ## Motivation
 
@@ -75,7 +75,7 @@ No rules are enabled by default. Add the recommended profile to the project or u
 
 ```toml
 [tool.ddd-lint]
-select = ["DM004", "CT", "DI001"]
+profile = "recommended"
 ```
 
 Then run:
@@ -97,6 +97,18 @@ mode = "strict"
 ```
 
 ## Rules
+
+Profiles also work through `ddd-lint check --profile recommended`:
+
+- `recommended`: metadata pairs, validator-backed relationships, state/payload review, closed-type checks, and collaborator checks.
+- `review`: recommended plus nullable concentration, generated defaults, and implicit choices. Review findings do not affect exit status.
+- `strict-construction`: blanket nullable/default policies plus structural and collaborator checks.
+
+Explicit configuration `select` replaces profile selection; `ignore` always wins. CLI `--profile` replaces configured selection. `--raw` preserves overlapping findings; otherwise specific findings carry broader observations as related evidence. JSON includes `model`, `fields`, `evidence`, `confidence`, `severity`, and `related` alongside existing rule codes and source ranges.
+
+Human-readable checks end with a summary table grouped by rule code, showing each rule's count and a total. Counts reflect displayed findings after suppression and deduplication; `--raw` counts independent findings. Clean checks print `No findings.` JSON remains a diagnostic array.
+
+See [default classifications and relationship rules](docs/rules/defaults-and-relationships.md) for opt-in rules DM005–DM011 and DI002.
 
 | Code | Rule | Purpose |
 | --- | --- | --- |

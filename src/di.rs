@@ -7,7 +7,10 @@ use crate::python::ConstructorFallbackKind;
 use crate::rules::RuleCode;
 
 pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
-    if !enabled.iter().any(|rule| rule.as_str() == "DI001") {
+    if !enabled
+        .iter()
+        .any(|rule| matches!(rule.as_str(), "DI001" | "DI002"))
+    {
         return Vec::new();
     }
     let diagnostic_paths = graph
@@ -19,7 +22,27 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
     graph
         .constructor_fallbacks()
         .filter(|fallback| diagnostic_paths.contains(&fallback.path))
-        .map(|fallback| {
+        .filter(|fallback| !graph.immutable_fallback(fallback))
+        .filter_map(|fallback| {
+            if graph.mutable_builtin_fallback(fallback) {
+                return (fallback.kind == ConstructorFallbackKind::DirectDefault
+                    && enabled.iter().any(|rule| rule.as_str() == "DI002"))
+                .then(|| {
+                    Diagnostic::new(
+                        &fallback.path,
+                        fallback.range,
+                        RuleCode::from_str("DI002").unwrap(),
+                        format!(
+                            "constructor parameter `{}` shares a mutable default across calls",
+                            fallback.parameter
+                        ),
+                        "allocate mutable state per call instead of in the function signature",
+                    )
+                });
+            }
+            if !enabled.iter().any(|rule| rule.as_str() == "DI001") {
+                return None;
+            }
             let form = match fallback.kind {
                 ConstructorFallbackKind::DirectDefault => "call expression as its default",
                 ConstructorFallbackKind::OrExpression => "falsy `or` call fallback",
@@ -28,7 +51,7 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
                 }
                 ConstructorFallbackKind::NoneAssignment => "None-guarded call fallback",
             };
-            Diagnostic::new(
+            Some(Diagnostic::new(
                 &fallback.path,
                 fallback.range,
                 RuleCode::from_str("DI001").expect("DI001 is registered"),
@@ -37,7 +60,7 @@ pub fn run(graph: &ProjectGraph, enabled: &[RuleCode]) -> Vec<Diagnostic> {
                     fallback.parameter
                 ),
                 "require explicit injection or move composition into a named factory",
-            )
+            ))
         })
         .collect()
 }

@@ -18,7 +18,15 @@ stdout:
     },
     "message": "model field `cancellation_reason` explicitly admits None",
     "remediation": "represent absence as an explicit model variant or document a design exception",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md",
+    "model": "shop.order.Order",
+    "fields": [
+      "cancellation_reason"
+    ],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   }
 ]
 stderr:

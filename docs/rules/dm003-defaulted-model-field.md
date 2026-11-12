@@ -18,7 +18,9 @@ DDD does not prohibit defaults. A universal domain default can be valid. This ru
 
 ## What It Checks
 
-`DM003` reports all non-required Pydantic field forms:
+`DM003` reports non-required Pydantic field forms except matching single-value Literal tags, such as `kind: Literal["ready"] = "ready"`:
+
+Matching enum-member tags also qualify: `state: Literal[State.READY] = State.READY`. Imported aliases and re-exports resolve to the same member identity. A different enum member, an underlying scalar value, or a multi-value Literal does not qualify.
 
 ```python
 status: Status = Status.DRAFT
@@ -33,6 +35,8 @@ priority: Annotated[int, Field(default=0)]
 Any assigned expression that makes the field omittable counts, not only Python literal expressions. `Field(default=...)` and `Field(default_factory=...)` also count when supplied through `Annotated` without an assignment. Required `Field(...)` declarations and metadata-only `Annotated` declarations do not trigger. `RootModel` and its descendants are excluded.
 
 ## Example
+
+For classification rather than blanket construction policy, use opt-in [DM005, DM006, DM007, and DM011](defaults-and-relationships.md). Recommended and review profiles do not enable DM003. When DM003 and narrower default rules are selected together, DM003 takes precedence.
 
 Problematic:
 

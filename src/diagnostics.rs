@@ -15,9 +15,33 @@ pub struct Diagnostic {
     pub rule: RuleCode,
     pub message: String,
     pub remediation: String,
+    pub model: Option<String>,
+    pub fields: Vec<String>,
+    pub evidence: Vec<String>,
+    pub confidence: &'static str,
+    pub related: Vec<RelatedFinding>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RelatedFinding {
+    pub rule: &'static str,
+    pub message: String,
 }
 
 impl Diagnostic {
+    pub fn is_review(&self) -> bool {
+        if self
+            .related
+            .iter()
+            .any(|finding| matches!(finding.rule, "DM001" | "CT001"))
+        {
+            return false;
+        }
+        matches!(
+            self.rule.as_str(),
+            "DM002" | "DM005" | "DM006" | "DM007" | "DM011"
+        ) || (self.rule.as_str() == "DM010" && self.confidence == "low")
+    }
     pub fn new(
         path: impl Into<PathBuf>,
         range: ByteRange,
@@ -31,6 +55,11 @@ impl Diagnostic {
             rule,
             message: message.into(),
             remediation: remediation.into(),
+            model: None,
+            fields: Vec::new(),
+            evidence: Vec::new(),
+            confidence: "high",
+            related: Vec::new(),
         }
     }
 }
@@ -58,6 +87,60 @@ pub struct DiagnosticSet {
 }
 
 impl DiagnosticSet {
+    pub fn deduplicated(self) -> Self {
+        let mut items = self.diagnostics;
+        let mut removed = vec![false; items.len()];
+        for broad in 0..items.len() {
+            let target = (0..items.len()).find(|&specific| {
+                if specific == broad || items[broad].path != items[specific].path {
+                    return false;
+                }
+                let a = &items[broad];
+                let b = &items[specific];
+                match a.rule.as_str() {
+                    "DM004" => {
+                        b.rule.as_str() == "DM008"
+                            && a.model.is_some()
+                            && a.model == b.model
+                            && a.fields.iter().all(|field| b.fields.contains(field))
+                    }
+                    "DM001" => {
+                        matches!(b.rule.as_str(), "DM004" | "DM008" | "DM009" | "DM010")
+                            && a.model.is_some()
+                            && a.model == b.model
+                            && a.fields.iter().all(|field| b.fields.contains(field))
+                    }
+                    "DM002" => {
+                        matches!(b.rule.as_str(), "DM004" | "DM008" | "DM009" | "DM010")
+                            && a.model.is_some()
+                            && a.model == b.model
+                    }
+                    "CT001" => {
+                        b.rule.as_str() == "CT002"
+                            && a.range.start() <= b.range.start()
+                            && a.range.end() >= b.range.end()
+                    }
+                    _ => false,
+                }
+            });
+            if let Some(target) = target {
+                let related = RelatedFinding {
+                    rule: items[broad].rule.as_str(),
+                    message: items[broad].message.clone(),
+                };
+                items[target].related.push(related);
+                removed[broad] = true;
+            }
+        }
+        Self::new(
+            items
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| (!removed[index]).then_some(item))
+                .collect(),
+        )
+    }
+
     pub fn new(mut diagnostics: Vec<Diagnostic>) -> Self {
         diagnostics.sort_by(|left, right| {
             normalize_path(&left.path)
@@ -70,6 +153,23 @@ impl DiagnosticSet {
 
     pub fn as_slice(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    pub fn write_summary(&self, output: &mut dyn Write) -> io::Result<()> {
+        if self.diagnostics.is_empty() {
+            return writeln!(output, "No findings.");
+        }
+        let mut counts = BTreeMap::new();
+        for diagnostic in &self.diagnostics {
+            *counts.entry(diagnostic.rule.as_str()).or_insert(0usize) += 1;
+        }
+        writeln!(output, "\nSummary by rule")?;
+        writeln!(output, "{:<7} {:>7}  Rule", "Code", "Count")?;
+        for (code, count) in counts {
+            let rule: RuleCode = code.parse().expect("registered diagnostic rule");
+            writeln!(output, "{code:<7} {count:>7}  {}", rule.summary().name)?;
+        }
+        writeln!(output, "{:<7} {:>7}", "Total", self.diagnostics.len())
     }
 
     pub fn write_human(
@@ -108,6 +208,16 @@ impl DiagnosticSet {
                 diagnostic.remediation,
                 rule.documentation
             )?;
+            for related in &diagnostic.related {
+                let rule: RuleCode = related.rule.parse().expect("registered related rule");
+                writeln!(
+                    output,
+                    "  related: {} {}: {}",
+                    related.rule,
+                    rule.summary().name,
+                    related.message
+                )?;
+            }
         }
         Ok(())
     }
@@ -146,6 +256,9 @@ impl DiagnosticSet {
                 diagnostic.remediation
             )?;
             writeln!(output, "    \x1b[2mdocs: {}\x1b[0m", rule.documentation)?;
+            for related in &diagnostic.related {
+                writeln!(output, "    related: {}: {}", related.rule, related.message)?;
+            }
         }
         Ok(())
     }
@@ -170,6 +283,16 @@ impl DiagnosticSet {
                     message: &diagnostic.message,
                     remediation: &diagnostic.remediation,
                     documentation: rule.documentation,
+                    model: diagnostic.model.as_deref(),
+                    fields: &diagnostic.fields,
+                    evidence: &diagnostic.evidence,
+                    confidence: diagnostic.confidence,
+                    related: &diagnostic.related,
+                    severity: if diagnostic.is_review() {
+                        "review"
+                    } else {
+                        "warning"
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -207,6 +330,12 @@ struct JsonDiagnostic<'a> {
     message: &'a str,
     remediation: &'a str,
     documentation: &'static str,
+    model: Option<&'a str>,
+    fields: &'a [String],
+    evidence: &'a [String],
+    confidence: &'static str,
+    related: &'a [RelatedFinding],
+    severity: &'static str,
 }
 
 #[derive(Serialize)]
@@ -385,6 +514,26 @@ mod tests {
     }
 
     #[test]
+    fn summary_counts_displayed_findings_by_code_not_related_evidence() {
+        let mut specific = diagnostic("a.py", 0, "DM004");
+        specific.related.push(super::RelatedFinding {
+            rule: "DM001",
+            message: "nullable field".to_owned(),
+        });
+        let diagnostics = DiagnosticSet::new(vec![
+            specific,
+            diagnostic("b.py", 0, "DI001"),
+            diagnostic("c.py", 0, "DM004"),
+        ]);
+        let mut output = Vec::new();
+        diagnostics.write_summary(&mut output).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\nSummary by rule\nCode      Count  Rule\nDI001         1  hidden-constructor-fallback\nDM004         2  nullable-event-metadata-pair\nTotal         3\n"
+        );
+    }
+
+    #[test]
     fn renders_stable_human_and_json_ranges() {
         let source = SourceFile::new("model.py", "name: str | None\n");
         let mut sources = SourceMap::default();
@@ -403,10 +552,11 @@ mod tests {
         diagnostics
             .write_json(&mut json, std::path::Path::new("."), &sources)
             .expect("JSON output");
-        assert_eq!(
-            String::from_utf8(json).expect("UTF-8"),
-            "[\n  {\n    \"code\": \"DM001\",\n    \"name\": \"nullable-model-field\",\n    \"family\": \"Domain model\",\n    \"path\": \"model.py\",\n    \"range\": {\n      \"start\": {\n        \"line\": 1,\n        \"column\": 1\n      },\n      \"end\": {\n        \"line\": 1,\n        \"column\": 2\n      }\n    },\n    \"message\": \"observed condition\",\n    \"remediation\": \"model alternatives explicitly\",\n    \"documentation\": \"https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md\"\n  }\n]\n"
-        );
+        let value: serde_json::Value = serde_json::from_slice(&json).expect("JSON");
+        assert_eq!(value[0]["code"], "DM001");
+        assert_eq!(value[0]["range"]["end"]["column"], 2);
+        assert_eq!(value[0]["confidence"], "high");
+        assert_eq!(value[0]["related"], serde_json::json!([]));
     }
 
     #[test]

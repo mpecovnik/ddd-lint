@@ -18,7 +18,13 @@ stdout:
     },
     "message": "match omits closed members: domain.Published",
     "remediation": "add an unguarded explicit case for every closed member",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "CT002",
@@ -37,7 +43,13 @@ stdout:
     },
     "message": "catch-all hides changes to the closed type",
     "remediation": "replace the wildcard or capture with explicit member cases",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct002-catch-all-on-closed-type.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct002-catch-all-on-closed-type.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "CT003",
@@ -56,7 +68,13 @@ stdout:
     },
     "message": "conditional dispatch selects multiple members of the same closed type",
     "remediation": "use an exhaustive match statement for closed-type dispatch",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct003-conditional-closed-type-dispatch.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct003-conditional-closed-type-dispatch.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "CT004",
@@ -75,7 +93,13 @@ stdout:
     },
     "message": "match dispatches through discriminator `kind`",
     "remediation": "match the union value with member class patterns",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct004-discriminator-match.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct004-discriminator-match.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "CT001",
@@ -94,7 +118,13 @@ stdout:
     },
     "message": "match omits closed members: domain.Published",
     "remediation": "add an unguarded explicit case for every closed member",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "CT001",
@@ -113,7 +143,13 @@ stdout:
     },
     "message": "match omits closed members: domain.Stage.PUBLISHED",
     "remediation": "add an unguarded explicit case for every closed member",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/ct001-non-exhaustive-match.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "DM004",
@@ -132,7 +168,18 @@ stdout:
     },
     "message": "nullable event metadata `selected_by` and `selected_at` share prefix `selected`",
     "remediation": "group the actor and timestamp into one optional metadata value or document independent absence",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm004-nullable-event-metadata-pair.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm004-nullable-event-metadata-pair.md",
+    "model": "metadata.Selection",
+    "fields": [
+      "selected_by",
+      "selected_at"
+    ],
+    "evidence": [
+      "shared event prefix; correlation is not proven"
+    ],
+    "confidence": "low",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "DM001",
@@ -151,7 +198,15 @@ stdout:
     },
     "message": "model field `note` explicitly admits None",
     "remediation": "represent absence as an explicit model variant or document a design exception",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm001-nullable-model-field.md",
+    "model": "models.NullableOrder",
+    "fields": [
+      "note"
+    ],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "DM002",
@@ -170,7 +225,17 @@ stdout:
     },
     "message": "model has 3 nullable fields out of 4 declared fields",
     "remediation": "review whether nullable fields encode correlated states; independent absence may be intentional",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm002-nullable-heavy-model.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm002-nullable-heavy-model.md",
+    "model": "models.SparseOrder",
+    "fields": [
+      "first",
+      "second",
+      "third"
+    ],
+    "evidence": [],
+    "confidence": "low",
+    "related": [],
+    "severity": "review"
   },
   {
     "code": "DM003",
@@ -189,7 +254,17 @@ stdout:
     },
     "message": "model field `retries` has a default",
     "remediation": "require callers to provide the field or move policy into a named factory",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm003-defaulted-model-field.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/dm003-defaulted-model-field.md",
+    "model": "models.DefaultedOrder",
+    "fields": [
+      "retries"
+    ],
+    "evidence": [
+      "supplies an implicit choice"
+    ],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "DI001",
@@ -208,7 +283,13 @@ stdout:
     },
     "message": "constructor parameter `repository` selects a falsy `or` call fallback when omitted",
     "remediation": "require explicit injection or move composition into a named factory",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/di001-hidden-constructor-fallback.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/di001-hidden-constructor-fallback.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "SUP001",
@@ -227,7 +308,13 @@ stdout:
     },
     "message": "source design exception for DM003 suppresses no enabled diagnostic",
     "remediation": "remove the unused rule code or enable the diagnostic it documents",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   },
   {
     "code": "SUP001",
@@ -246,7 +333,13 @@ stdout:
     },
     "message": "source design exception for CT003 suppresses no enabled diagnostic",
     "remediation": "remove the unused rule code or enable the diagnostic it documents",
-    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md"
+    "documentation": "https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md",
+    "model": null,
+    "fields": [],
+    "evidence": [],
+    "confidence": "high",
+    "related": [],
+    "severity": "warning"
   }
 ]
 stderr:

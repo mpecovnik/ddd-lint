@@ -13,4 +13,18 @@ models.py:16:5-16:21: DM003 defaulted-model-field: model field `retries` has a d
 services.py:7:41-7:59: DI001 hidden-constructor-fallback: constructor parameter `repository` selects a falsy `or` call fallback when omitted; help: require explicit injection or move composition into a named factory; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/di001-hidden-constructor-fallback.md
 suppressed.py:38:12-38:64: SUP001 unused-suppression: source design exception for DM003 suppresses no enabled diagnostic; help: remove the unused rule code or enable the diagnostic it documents; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md
 uncertain.py:57:20-57:90: SUP001 unused-suppression: source design exception for CT003 suppresses no enabled diagnostic; help: remove the unused rule code or enable the diagnostic it documents; docs: https://github.com/mpecovnik/ddd-lint/blob/main/docs/rules/sup001-unused-suppression.md
+
+Summary by rule
+Code      Count  Rule
+CT001         3  non-exhaustive-match
+CT002         1  catch-all-on-closed-type
+CT003         1  conditional-closed-type-dispatch
+CT004         1  discriminator-match
+DI001         1  hidden-constructor-fallback
+DM001         1  nullable-model-field
+DM002         1  nullable-heavy-model
+DM003         1  defaulted-model-field
+DM004         1  nullable-event-metadata-pair
+SUP001        2  unused-suppression
+Total        13
 stderr:

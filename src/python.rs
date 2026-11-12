@@ -332,6 +332,8 @@ pub struct ConstructorFallbackFact {
     pub range: ByteRange,
     pub parameter: String,
     pub kind: ConstructorFallbackKind,
+    pub callee: Option<String>,
+    pub empty_call: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -486,6 +488,15 @@ pub struct ClassFact {
     pub members: Vec<AssignmentFact>,
     pub methods: Vec<FunctionFact>,
     pub nested_classes: Vec<ClassFact>,
+    pub relationships: Vec<RelationshipFact>,
+    pub frozen_keyword: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelationshipFact {
+    pub method: String,
+    pub fields: Vec<String>,
+    pub kind: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -533,6 +544,7 @@ pub struct AssignmentFact {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SemanticExpr {
+    EmptyCollection,
     Name(String),
     Attribute {
         value: Box<Self>,
@@ -772,6 +784,220 @@ fn extract_class(
         members,
         methods,
         nested_classes,
+        relationships: extract_relationships(&class.body),
+        frozen_keyword: class
+            .arguments
+            .iter()
+            .flat_map(|arguments| &arguments.keywords)
+            .any(|keyword| {
+                keyword
+                    .arg
+                    .as_ref()
+                    .is_some_and(|name| name.as_str() == "frozen")
+                    && matches!(&keyword.value, Expr::BooleanLiteral(value) if value.value)
+            }),
+    }
+}
+
+// Recognize explicit presence invariants, not relationships guessed from names.
+fn extract_relationships(body: &[Stmt]) -> Vec<RelationshipFact> {
+    let mut result = Vec::new();
+    for statement in body {
+        let Stmt::FunctionDef(method) = statement else {
+            continue;
+        };
+        collect_state_guards(&method.body, &method.name, &[], &mut result);
+        let mut tests = Vec::new();
+        for statement in &method.body {
+            if let Stmt::If(branch) = statement
+                && branch
+                    .body
+                    .iter()
+                    .any(|statement| matches!(statement, Stmt::Raise(_)))
+            {
+                tests.push(branch.test.as_ref());
+            }
+        }
+        let mut fields = std::collections::BTreeSet::new();
+        for test in &tests {
+            presence_fields(test, &mut fields);
+        }
+        let fields = fields.into_iter().collect::<Vec<_>>();
+        if !(2..=8).contains(&fields.len()) {
+            continue;
+        }
+        let mut accepted = Vec::new();
+        let mut known = true;
+        for mask in 0usize..(1 << fields.len()) {
+            let rejected = tests
+                .iter()
+                .map(|test| evaluate_presence(test, &fields, mask))
+                .collect::<Option<Vec<_>>>();
+            if let Some(rejected) = rejected {
+                if !rejected.iter().any(|value| *value) {
+                    accepted.push(mask);
+                }
+            } else {
+                known = false;
+                break;
+            }
+        }
+        if !known {
+            continue;
+        }
+        let kind = if accepted == vec![0, (1 << fields.len()) - 1] {
+            "DM008"
+        } else if accepted
+            == (0usize..(1 << fields.len()))
+                .filter(|mask| mask.count_ones() == 1)
+                .collect::<Vec<_>>()
+        {
+            "DM009"
+        } else {
+            continue;
+        };
+        result.push(RelationshipFact {
+            method: method.name.to_string(),
+            fields,
+            kind,
+        });
+    }
+    result
+}
+
+fn self_field(expression: &Expr) -> Option<&str> {
+    if let Expr::Attribute(attribute) = expression
+        && matches!(attribute.value.as_ref(), Expr::Name(name) if name.id.as_str() == "self")
+    {
+        Some(attribute.attr.as_str())
+    } else {
+        None
+    }
+}
+
+fn collect_state_guards(
+    body: &[Stmt],
+    method: &str,
+    parents: &[&Expr],
+    result: &mut Vec<RelationshipFact>,
+) {
+    for statement in body {
+        let Stmt::If(branch) = statement else {
+            continue;
+        };
+        let mut guards = parents.to_vec();
+        guards.push(&branch.test);
+        if branch
+            .body
+            .iter()
+            .any(|statement| matches!(statement, Stmt::Raise(_)))
+        {
+            let mut state = std::collections::BTreeSet::new();
+            let mut payload = std::collections::BTreeSet::new();
+            for guard in &guards {
+                state_guard_fields(guard, &mut state, &mut payload);
+            }
+            if !state.is_empty() && !payload.is_empty() {
+                result.push(RelationshipFact {
+                    method: method.to_owned(),
+                    fields: state.into_iter().chain(payload).collect(),
+                    kind: "DM010",
+                });
+            }
+        }
+        collect_state_guards(&branch.body, method, &guards, result);
+    }
+}
+
+fn state_guard_fields(
+    expression: &Expr,
+    state: &mut std::collections::BTreeSet<String>,
+    payload: &mut std::collections::BTreeSet<String>,
+) {
+    match expression {
+        Expr::Compare(compare) if compare.ops.len() == 1 && compare.comparators.len() == 1 => {
+            if let Some(field) = self_field(&compare.left) {
+                match (&compare.comparators[0], compare.ops[0]) {
+                    (Expr::StringLiteral(_), CmpOp::Eq | CmpOp::NotEq) => {
+                        state.insert(field.to_owned());
+                    }
+                    (Expr::NoneLiteral(_), CmpOp::Is | CmpOp::IsNot) => {
+                        payload.insert(field.to_owned());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Expr::BoolOp(boolean) if boolean.op == BoolOp::And => {
+            for value in &boolean.values {
+                state_guard_fields(value, state, payload);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn presence_fields(expression: &Expr, fields: &mut std::collections::BTreeSet<String>) {
+    if let Some(field) = self_field(expression) {
+        fields.insert(field.to_owned());
+    }
+    match expression {
+        Expr::Compare(compare) => {
+            presence_fields(&compare.left, fields);
+            for value in &compare.comparators {
+                presence_fields(value, fields);
+            }
+        }
+        Expr::BoolOp(boolean) => {
+            for value in &boolean.values {
+                presence_fields(value, fields);
+            }
+        }
+        Expr::UnaryOp(unary) => presence_fields(&unary.operand, fields),
+        _ => {}
+    }
+}
+
+fn evaluate_presence(expression: &Expr, fields: &[String], mask: usize) -> Option<bool> {
+    match expression {
+        Expr::Compare(compare) if compare.ops.len() == 1 && compare.comparators.len() == 1 => {
+            let right = &compare.comparators[0];
+            let field = if matches!(right, Expr::NoneLiteral(_)) {
+                self_field(&compare.left)
+            } else if matches!(compare.left.as_ref(), Expr::NoneLiteral(_)) {
+                self_field(right)
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                let present = mask & (1 << fields.iter().position(|name| name == field)?) != 0;
+                return match compare.ops[0] {
+                    CmpOp::Is => Some(!present),
+                    CmpOp::IsNot => Some(present),
+                    _ => None,
+                };
+            }
+            let left = evaluate_presence(&compare.left, fields, mask)?;
+            let right = evaluate_presence(right, fields, mask)?;
+            match compare.ops[0] {
+                CmpOp::Eq => Some(left == right),
+                CmpOp::NotEq => Some(left != right),
+                _ => None,
+            }
+        }
+        Expr::BoolOp(boolean) => {
+            let values = boolean
+                .values
+                .iter()
+                .map(|value| evaluate_presence(value, fields, mask))
+                .collect::<Option<Vec<_>>>()?;
+            Some(if boolean.op == BoolOp::And {
+                values.iter().all(|value| *value)
+            } else {
+                values.iter().any(|value| *value)
+            })
+        }
+        _ => None,
     }
 }
 
@@ -1261,6 +1487,8 @@ fn semantic_expr(
                 _ => SemanticExpr::Unknown,
             }
         }
+        Expr::Dict(dict) if dict.items.is_empty() => SemanticExpr::EmptyCollection,
+        Expr::Set(set) if set.elts.is_empty() => SemanticExpr::EmptyCollection,
         Expr::BooleanLiteral(boolean) => SemanticExpr::Boolean(boolean.value),
         Expr::NoneLiteral(_) => SemanticExpr::None,
         Expr::EllipsisLiteral(_) => SemanticExpr::Ellipsis,
@@ -1325,6 +1553,9 @@ impl<'a> ConstructorFallbackCollector<'a> {
                         range: ByteRange::from_ruff(call.range),
                         parameter: parameter.name().to_string(),
                         kind: ConstructorFallbackKind::DirectDefault,
+                        callee: expression_name(&call.func),
+                        empty_call: call.arguments.args.is_empty()
+                            && call.arguments.keywords.is_empty(),
                     });
                 }
                 Some((parameter.name().to_string(), constructor_default(default)))
@@ -1440,6 +1671,8 @@ fn collect_assignment_expression_fallback(
             range: ByteRange::from_ruff(call.range),
             parameter: parameter.id.to_string(),
             kind: ConstructorFallbackKind::OrExpression,
+            callee: expression_name(&call.func),
+            empty_call: call.arguments.args.is_empty() && call.arguments.keywords.is_empty(),
         });
     }
     if let Expr::If(conditional) = expression
@@ -1451,6 +1684,8 @@ fn collect_assignment_expression_fallback(
             range: ByteRange::from_ruff(call.range),
             parameter: parameter.to_owned(),
             kind: ConstructorFallbackKind::ConditionalExpression,
+            callee: expression_name(&call.func),
+            empty_call: call.arguments.args.is_empty() && call.arguments.keywords.is_empty(),
         });
     }
 }
@@ -1512,6 +1747,8 @@ fn collect_none_assignments(
                 range: ByteRange::from_ruff(call.range),
                 parameter: parameter.to_owned(),
                 kind: ConstructorFallbackKind::NoneAssignment,
+                callee: expression_name(&call.func),
+                empty_call: call.arguments.args.is_empty() && call.arguments.keywords.is_empty(),
             });
         }
     }

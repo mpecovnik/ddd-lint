@@ -31,6 +31,14 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
         output_format: OutputFormat,
 
+        /// Use a named rule profile instead of configured selection.
+        #[arg(long, value_enum)]
+        profile: Option<crate::config::Profile>,
+
+        /// Preserve overlapping diagnostics instead of attaching related evidence.
+        #[arg(long)]
+        raw: bool,
+
         /// Files or directories to check. Defaults to the current directory.
         paths: Vec<PathBuf>,
     },
